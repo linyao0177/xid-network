@@ -23,6 +23,22 @@ A device publishes on one node, its **home**, and names it in its DHT record (`"
 
 Nodes can also be bridged by hand: `node.bridge(<key of the device's node>, ['d/+/telemetry', 'd/+/to/#'])`, or `--bridge <key>=d/+/telemetry,d/+/to/#`. The bridge logs in with the node's key and copies what it receives into its own broker. A bridge carries only what was published on the node it reads, never what another bridge brought in, so two nodes can bridge each other without loops. Nothing is flooded across the network; a network-wide `#` subscription sees only the nodes bridged into its own.
 
+## In front of a broker you already run
+
+`boat-mqtt-gateway` puts the same HyperDHT entrance in front of an existing broker, such as NanoMQ, which stays unchanged ([`lib/gateway.js`](lib/gateway.js)).
+
+- Devices reach the gateway by network name or key.
+- It refuses a client id that does not start with the device's key.
+- It logs the device in to the broker with its key as username and a secret only the gateway knows as password, and then copies bytes.
+- The broker asks the gateway whether to let each login in, and its own ACL keeps each key under `d/<key>/`.
+
+```bash
+boat-mqtt-gateway --broker 127.0.0.1:1884 --users users.json --nanomq-conf ./nanomq
+nanomq start --conf ./nanomq/nanomq.conf
+```
+
+`test/gateway.js` runs it against a real NanoMQ (`$NANOMQ`), 12 checks. Results, the ESP32 run, and what we saw in NanoMQ itself are in [docs/nanomq-hyperdht.md](../../docs/nanomq-hyperdht.md#the-sidecar-built-and-tested-2026-11-08).
+
 ## Signed messages
 
 A node checks who publishes, but anyone can run a node, so a node or a bridge could change a message or replay an old one. Publishers that care sign their messages: `sign(secretKey, topic, seq, payload)` here, `hdht_mqtt_sign` on the device (`components/hdht_mqtt`). Each message carries the publisher's Ed25519 signature over the topic, a sequence number and the payload. `SignedInbox` checks a message against the key in its topic, whatever node it came through, and refuses a sequence number it has seen. The C and JS implementations are checked against each other in the tests.

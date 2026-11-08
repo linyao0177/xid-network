@@ -62,5 +62,42 @@ Nothing conflicts. EMQ has a precedent for optional transports that are off by d
 
 ## Recommendation
 
-1. **Start with the sidecar in Node.js.** It is a few days, needs nothing from EMQ, and gives an EMQ or NanoMQ operator a HyperDHT entrance that ESP32 devices can use.
+1. **Start with the sidecar in Node.js.** It is a few days, needs nothing from EMQ, and gives an EMQ or NanoMQ operator a HyperDHT entrance that ESP32 devices can use. (Built the same day; see below.)
 2. **Propose the native transport to EMQ as a joint project.** Its cost sits mostly in the thread bridge and in making hdht a server-grade library, and it only pays off if EMQ wants it upstream.
+
+## The sidecar, built and tested (2026-11-08)
+
+`boat-mqtt-gateway` ([`packages/boat-mqtt-node/lib/gateway.js`](../packages/boat-mqtt-node/lib/gateway.js)) is the sidecar. NanoMQ is unchanged and built from source (`4ac14f5`).
+
+**How it works:**
+
+- The gateway listens on HyperDHT and announces under a network name, like a node.
+- It refuses a CONNECT whose client id does not start with the key the peer proved in the Noise handshake.
+- Otherwise it sets the username to that key and the password to a secret only it holds, forwards the CONNECT to NanoMQ on 127.0.0.1, and from then on copies bytes.
+- NanoMQ checks logins with the gateway through `http_auth` `auth_req`.
+- NanoMQ's own ACL keeps each key to its namespace:
+  ```
+  {"permit": "allow", "username": "#", "action": "publish", "topics": ["d/${username}/#"]}
+  {"permit": "deny", "username": "#", "action": "publish", "topics": ["d/#"]}
+  ```
+- `--nanomq-conf` writes both files.
+
+**Off-board** (`packages/boat-mqtt-node/test/gateway.js`, local HyperDHT testnet, 12 of 12):
+
+- A device found the gateway by network name. 100 messages reached an app on NanoMQ's port, and an app reached the device's inbox.
+- NanoMQ's ACL with `${username}` disconnected a key that published under another key. This confirms the inference above.
+- Refused: a takeover by client id (by the gateway); a direct login as a key without the secret; an operator app using a key as its client id; anonymous logins; an operator app publishing under `d/`.
+- MQTT 5 also works through the gateway.
+
+**On the board** (ESP32-C3 running `examples/mqtt_p2p`, public HyperDHT, gateway and NanoMQ on a Mac on the same LAN):
+
+- The device found the gateway in 6.8 s and logged in to NanoMQ with its key.
+- An operator app on NanoMQ's TCP port got its telemetry.
+- An app that came in through the gateway checked every telemetry signature, and its commands were acknowledged in 67–135 ms.
+
+### What we saw in NanoMQ itself
+
+- **A refused login drops the existing session.** NanoMQ drops a connected client when a CONNECT with the same client id arrives, even if that CONNECT is then refused. This happened for an operator login refused by `auth_req`, and for an anonymous one. So anyone who can reach NanoMQ's port can disconnect a client whose id they know, without credentials (the client reconnects). Behind the gateway only processes on the same machine can reach the port, and the gateway refuses such client ids first. Worth reporting to EMQ.
+- **QoS 1 order.** QoS 1 messages from one publisher on one topic arrived out of order: 4 of 100 over plain TCP, and 10 of 100 through the gateway. MQTT 3.1.1 asks a server to keep each topic in order by default. Not looked into further; it may depend on the task-queue thread count.
+- **A refusal is a close.** A refused login is closed without a CONNACK error, so clients see a closed connection rather than a reason.
+- **Startup order.** Started before its configuration file exists, NanoMQ logs an error and keeps running without one. Start it after the gateway has written the file.

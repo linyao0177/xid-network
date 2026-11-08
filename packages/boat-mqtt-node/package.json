@@ -9,7 +9,8 @@
     "./package": "./package.json"
   },
   "bin": {
-    "boat-mqtt-node": "bin/boat-mqtt-node.js"
+    "boat-mqtt-node": "bin/boat-mqtt-node.js",
+    "boat-mqtt-gateway": "bin/boat-mqtt-gateway.js"
   },
   "files": [
     "index.js",
@@ -17,7 +18,7 @@
     "bin"
   ],
   "scripts": {
-    "test": "node test/run.js"
+    "test": "node test/run.js && node test/gateway.js"
   },
   "license": "MIT",
   "engines": {
@@ -28,6 +29,7 @@
     "boat-peer": "file:../boat-peer",
     "hyperdht": "6.36.0",
     "mqtt": "5.16.1",
+    "mqtt-packet": "9.0.2",
     "sodium-universal": "5.0.1"
   }
 }
