@@ -7,6 +7,7 @@ An ESP32 device on a network of MQTT nodes that anyone can run ([`packages/boat-
 - **Telemetry**: `d/<key>/telemetry` every `CONFIG_MQTT_P2P_INTERVAL` seconds, QoS 1, from a task of its own.
 - **Signed** (`CONFIG_MQTT_P2P_SIGN`, on by default): each telemetry message carries the device's Ed25519 signature and a sequence number that rises across restarts, so an app checks it whatever node or bridge it came through. About 21 ms per message on the C3.
 - **Home record**: each time it connects, the device puts `{"v":1,"did":…,"mqtt":"<node key>"}` in its DHT record. A node that gets a subscription to `d/<device key>/…` reads it and bridges the device from there, and apps send it messages at that node (`watch.js --home`).
+- **Receipts**: the node it is on sends a signed receipt every 5 s for what it got. The device checks it in C, the signature and whether it covers what the device sent this boot, and prints `MQTT|receipt … covers N of the M we sent this boot`.
 - **Commands**: the device subscribes to `d/+/to/<key>/#`, where `+` is the sender's key (the node guarantees it), prints each message and acknowledges it to its sender on `d/<key>/to/<sender>/ack`.
 
 ## Run it
@@ -50,5 +51,7 @@ An ESP32 device on a network of MQTT nodes that anyone can run ([`packages/boat-
 | Firmware | 1.19 MB (23 % of the app partition free) |
 
 Following and signatures, the same day: node A announced on the network, node C on its own with no bridges. The device joined A and named it in its record. An app on C subscribed to `d/<device>/#`. C read the record, bridged the device from A, and the app checked every telemetry message's signature and sequence number (1:7 to 1:14). Commands sent through the device's home node (`--home`) were acknowledged in 66–141 ms.
+
+Receipts and a storage node, the same night: the device checked every receipt from its node, signature OK and covering what it sent (once one message short while it was in flight). A storage node (`packages/boat-mqtt-node`, `boat-mqtt-store`) kept its telemetry. Read back directly and through a mirror replicated over the public DHT, every entry checked out against the store's signed tree and the device's signature, with no gaps.
 
 Both nodes were on the same LAN as the board, so the round trips are LAN figures. A node elsewhere adds the network round trip. When a node goes away, most of the failover time is esp-mqtt's reconnect wait (5 s) plus a new lookup (~5 s).

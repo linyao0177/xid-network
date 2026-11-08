@@ -43,6 +43,29 @@ nanomq start --conf ./nanomq/nanomq.conf
 
 A node checks who publishes, but anyone can run a node, so a node or a bridge could change a message or replay an old one. Publishers that care sign their messages: `sign(secretKey, topic, seq, payload)` here, `hdht_mqtt_sign` on the device (`components/hdht_mqtt`). Each message carries the publisher's Ed25519 signature over the topic, a sequence number and the payload. `SignedInbox` checks a message against the key in its topic, whatever node it came through, and refuses a sequence number it has seen. The C and JS implementations are checked against each other in the tests.
 
+## Receipts from every hop
+
+Each node signs a receipt for the signed messages it handled for a device, directly or through a bridge: the sequence numbers as ranges, a count and bytes, in one text line that a device checks in C ([`lib/receipts.js`](lib/receipts.js), `hdht_mqtt_receipt_open`). Every 5 s a node sends the device its receipt and retains it at `d/<node>/receipts/<device>`, where anyone can read every hop's. Invoices carry the latest receipt, so a bill can be checked against it. A receipt that names a sequence number the device never sent is the node's signed word against itself (`compareReceipt`).
+
+## Storage nodes
+
+A storage node keeps the history of devices, in Hypercores ([`lib/store.js`](lib/store.js), `boat-mqtt-store --device <key>`):
+
+- It follows each device to its home node and keeps only messages that carry the device's signature, refusing replays. Each device gets a core signed by the store, so a reader checks every entry twice: against the store's signed tree and against the device's own signature. A store can lose data but cannot change it.
+- A catalog (Hyperbee) maps devices to cores. The store's DHT record names it and a key to replicate from. A mirror (`createMirror`) copies the cores with Hypercore's own replication and serves them the same way.
+- Anyone can check a store without holding the data: a spot check asks for random blocks with their Merkle proofs, using `packages/boat-ota`'s protocol, which devices also check in C. A store that dropped a block cannot answer for it.
+- It signs receipts for what it stored, as every hop does.
+
+`examples/read-store.js <store> <device> [--mirror dir]` reads and checks a device's history and spot-checks the store.
+
+On the ESP32-C3 with `examples/mqtt_p2p` (public HyperDHT, node and store on a Mac, 2026-11-08):
+
+- The device checked every receipt from its node in C: signature, and coverage of what it had sent this boot. Once 8 of 9 were covered, with one message still in flight; the next receipt covered it.
+- The store held 47 messages with no rejects. A read checked every entry, and a mirror replicated the store over the public DHT in 8.4 s and passed the same checks.
+- The node's receipt (3:0–3:31), the store's (3:6–3:31, as it joined at seq 6) and the device's own count agreed.
+
+Not yet: a store starts with what arrives after it follows a device (no backfill), and storage is not paid for.
+
 ## Paid per message
 
 With `billing`, a node charges each key for what it publishes and takes EIP-3009 payments (USD₮, USDC), the payments BoAT MER devices sign ([`lib/billing.js`](lib/billing.js)):
@@ -83,9 +106,10 @@ out.publish(to(app.publicKey, deviceKey, 'cmd'), 'relay=on')
 
 ## Tests
 
-`npm test` runs nodes on a local HyperDHT testnet (35 checks):
+`npm test` runs `test/run.js` (42 checks), `test/store.js` (storage nodes, 9) and `test/gateway.js` (NanoMQ, 12, when `$NANOMQ` is set). On a local HyperDHT testnet, `test/run.js` covers:
 
-- **Signed messages:** C and JS signatures checked against each other.
+- **Signed messages and receipts:** C and JS signatures and receipts checked against each other.
+- **Receipts:** a node's receipt for what it got, one for each hop through a bridge, and an invoice whose receipt matches the bill.
 - **Connecting:** lookup by network name.
 - **Delivery:** a device publishes to apps over TCP, over HyperDHT and across a bridge; a command reaches the device's inbox; two nodes bridge each other without a loop.
 - **Following:** a node follows a device to its home node from its record; a replayed or changed message is caught; a command reaches the device through `connectHome`.

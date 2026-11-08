@@ -10,7 +10,8 @@
   },
   "bin": {
     "boat-mqtt-node": "bin/boat-mqtt-node.js",
-    "boat-mqtt-gateway": "bin/boat-mqtt-gateway.js"
+    "boat-mqtt-gateway": "bin/boat-mqtt-gateway.js",
+    "boat-mqtt-store": "bin/boat-mqtt-store.js"
   },
   "files": [
     "index.js",
@@ -18,7 +19,7 @@
     "bin"
   ],
   "scripts": {
-    "test": "node test/run.js && node test/gateway.js"
+    "test": "node test/run.js && node test/store.js && node test/gateway.js"
   },
   "license": "MIT",
   "engines": {
@@ -26,7 +27,10 @@
   },
   "dependencies": {
     "aedes": "1.2.0",
+    "boat-ota": "file:../boat-ota",
     "boat-peer": "file:../boat-peer",
+    "corestore": "7.16.1",
+    "hyperbee": "2.27.3",
     "hyperdht": "6.36.0",
     "mqtt": "5.16.1",
     "mqtt-packet": "9.0.2",

@@ -11,7 +11,8 @@
 // - Metering. For each key: owed = price_msg × messages + ceil(price_kb ×
 //   bytes / 1024), payload bytes. A device can count the same thing itself.
 // - Invoices. The node publishes {"invoice","owed","paid","due","pay",
-//   "token","chain_id"} to d/<node>/to/<device>/invoice, every few seconds
+//   "token","chain_id","receipt"} to d/<node>/to/<device>/invoice (receipt:
+//   the node's signed receipt for the key's signed messages, receipts.js), every few seconds
 //   while something is due, and at once when half the credit is used.
 // - Payments. The device publishes an authorization to
 //   d/<device>/to/<node>/pay: {"from","to","value","validAfter",
@@ -119,6 +120,8 @@ export class Billing extends EventEmitter {
     a.invoice++
     a.lastInvoice = Date.now()
     const body = { invoice: String(a.invoice), owed: String(owed), paid: String(a.paid), due: String(owed - a.paid), pay: this.payee, token: this.token, chain_id: String(this.chainId) }
+    // what the node signs it got from this key, so the bill can be checked against it
+    if (this.node.receipts && this.node.receipts.devices.has(key)) body.receipt = this.node.receipts.receipt(key)
     this.node.broker.publish({ cmd: 'publish', topic: `d/${hex(this.node.publicKey)}/to/${key}/invoice`, payload: Buffer.from(JSON.stringify(body)), qos: 1, retain: false }, () => {})
     this.emit('invoice', { key, ...body })
   }

@@ -7,6 +7,7 @@ import { topicOf, senderOf, NETWORK, hex } from './topics.js'
 import { connect } from './client.js'
 import { homeOf } from './home.js'
 import { Billing } from './billing.js'
+import { Receipts } from './receipts.js'
 
 const BRIDGED = '$bridge' // marks packets a bridge brought in from another node
 const ANNOUNCE_MS = 10 * 60 * 1000 // DHT nodes keep an announcement for 20 minutes
@@ -30,6 +31,9 @@ const BAD_USER_OR_PASSWORD = 4
 //   device by key (d/<key>/...), and the device's record names another node
 //   as its home, this node bridges d/<key>/# from that node.
 // - opts.billing charges per message and takes EIP-3009 payments (billing.js).
+// - Receipts (receipts.js): the node signs what signed messages it got for
+//   each device, directly or through a bridge, every opts.receiptMs (5 s), to
+//   the device's inbox and retained at d/<node>/receipts/<device>.
 export async function createNode (opts = {}) {
   const node = new BoatMqttNode(opts)
   await node.ready()
@@ -57,6 +61,9 @@ export class BoatMqttNode extends EventEmitter {
     this._following = new Map() // device key hex -> home key hex (or null while resolving)
     this._homes = new Map() // home key hex -> Promise<bridge client>
     this.billing = opts.billing ? new Billing(this, opts.billing) : null
+    this.receipts = opts.receipts === false ? null : new Receipts(this.keyPair)
+    this.receiptMs = opts.receiptMs || 5000
+    this._receiptTimer = null
   }
 
   async ready () {
@@ -96,6 +103,10 @@ export class BoatMqttNode extends EventEmitter {
     }
 
     if (this.billing) await this.billing.start()
+    if (this.receipts) {
+      this._receiptTimer = setInterval(() => this.sendReceipts(), this.receiptMs)
+      this._receiptTimer.unref()
+    }
 
     if (this.network !== null) {
       await this._announce()
@@ -150,6 +161,7 @@ export class BoatMqttNode extends EventEmitter {
       this.emit('refused', { client: describe(client), topic, reason })
       return done(new Error(reason)) // MQTT 3.1.1: the node closes the connection
     }
+    if (client.key && this.receipts) this.receipts.add(client.key, packet.payload)
     const id = client.key || 'tcp:' + client.user
     const u = this._usage.get(id) || { messages: 0, bytes: 0 }
     u.messages++
@@ -170,6 +182,8 @@ export class BoatMqttNode extends EventEmitter {
     const client = await connect(remoteKey, { ...opts, dht: this.dht, keyPair: this.keyPair, clientId: hex(this.publicKey) + '-bridge' })
     if (filters.length) await client.subscribeAsync(filters, { qos: 1 })
     client.on('message', (topic, payload, packet) => {
+      const from = senderOf(topic)
+      if (from && this.receipts) this.receipts.add(from, payload)
       this.broker.publish({ cmd: 'publish', topic, payload, qos: packet.qos, retain: false, clientId: BRIDGED }, () => {})
     })
     this.bridges.add(client)
@@ -206,6 +220,17 @@ export class BoatMqttNode extends EventEmitter {
     }
   }
 
+  // signs a receipt for each device with new signed messages
+  sendReceipts () {
+    const me = hex(this.publicKey)
+    for (const key of this.receipts.dirty()) {
+      const line = Buffer.from(this.receipts.receipt(key))
+      this.broker.publish({ cmd: 'publish', topic: `d/${me}/receipts/${key}`, payload: line, qos: 1, retain: true }, () => {})
+      this.broker.publish({ cmd: 'publish', topic: `d/${me}/to/${key}/receipt`, payload: line, qos: 1, retain: false }, () => {})
+      this.emit('receipt', { key, line: String(line) })
+    }
+  }
+
   // device key hex -> home node key hex, for the devices this node follows
   following () {
     return Object.fromEntries([...this._following].filter(([, v]) => v))
@@ -213,6 +238,7 @@ export class BoatMqttNode extends EventEmitter {
 
   async close () {
     clearInterval(this._timer)
+    clearInterval(this._receiptTimer)
     if (this.billing) this.billing.stop()
     for (const b of this.bridges) b.end(true)
     if (this.network !== null) await this.dht.unannounce(this.topic, this.keyPair).catch(() => {})

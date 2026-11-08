@@ -16,7 +16,7 @@ import createTestnet from 'hyperdht/testnet.js'
 import mqtt from 'mqtt'
 import crypto from 'crypto'
 import { createRequire } from 'module'
-import { createNode, connect, connectHome, findNodes, own, to, inboxOf, senderOf, sign, open, SignedInbox, homeOf, publishHome } from '../index.js'
+import { createNode, connect, connectHome, findNodes, own, to, inboxOf, senderOf, sign, open, SignedInbox, homeOf, publishHome, Receipts, openReceipt, compareReceipt } from '../index.js'
 
 const { eth, makeRecord } = createRequire(import.meta.url)('boat-peer')
 
@@ -52,6 +52,7 @@ const freePort = () => new Promise((resolve) => {
 })
 
 // signed messages, in JS and in the device's C (components/hdht_mqtt/signed.c)
+let cTool = null // runs components/hdht_mqtt/test/test_signed, when it builds
 {
   const seed = Buffer.alloc(32, 7)
   const kp = HyperDHT.keyPair(seed)
@@ -81,6 +82,7 @@ const freePort = () => new Promise((resolve) => {
   }
   if (built) {
     const c = (...args) => execFileSync(bin, args).toString().trim()
+    cTool = c
     const fromC = Buffer.from(c('sign', seed.toString('hex'), topic, '18446744073709551615', 'from C'), 'hex')
     const o = open(kp.publicKey, topic, fromC)
     check('C signs, JS opens (seq up to 2^64-1)', o && o.seq === 18446744073709551615n && String(o.payload) === 'from C')
@@ -88,6 +90,31 @@ const freePort = () => new Promise((resolve) => {
   } else {
     console.log('SKIP the C side of signed messages: no clang or libsodium')
   }
+}
+
+// receipts, without a network
+{
+  const kp = HyperDHT.keyPair()
+  const dev = HyperDHT.keyPair()
+  const r = new Receipts(kp)
+  const t = own(dev.publicKey) + 'telemetry'
+  for (const n of [1, 2, 3, 7, 5, 6, 3, 9]) r.add(dev.publicKey, sign(dev.secretKey, t, n, 'x'))
+  const line = r.receipt(dev.publicKey)
+  const o = openReceipt(line, kp.publicKey)
+  check('a receipt merges sequence numbers into ranges and skips repeats', o && o.count === 7 && o.ranges.map(([a, b]) => `${a}-${b}`).join(';') === '1-3;5-7;9-9', line.split('|').slice(3, 6).join('|'))
+  const tampered = line.replace('|1-3;', '|1-4;')
+  check('a changed receipt, or one from another signer, does not open', !openReceipt(tampered) && !openReceipt(line, dev.publicKey))
+  const cmp = compareReceipt(o, [1n, 2n, 3n, 4n, 5n, 6n, 7n, 9n])
+  const lying = openReceipt(new Receipts(kp).receipt(dev.publicKey) || '') // none for an unknown device
+  const r2 = new Receipts(kp)
+  for (const n of [1, 2, 3]) r2.add(dev.publicKey, sign(dev.secretKey, t, n, 'x'))
+  r2.add(dev.publicKey, sign(dev.secretKey, t, 50, 'x')) // a seq the device never sent
+  const cmp2 = compareReceipt(openReceipt(r2.receipt(dev.publicKey)), [1n, 2n, 3n])
+  if (cTool) {
+    // 1-3;5-7;9-9 against sent 1..7: 6 covered, 1 (seq 9) beyond what was sent
+    check('C opens and checks a JS receipt; refuses a changed one', cTool('receipt', kp.publicKey.toString('hex'), line, '1', '7') === '7 525 3 6 1' && cTool('receipt', kp.publicKey.toString('hex'), tampered, '1', '7') === 'BAD' && cTool('receipt', dev.publicKey.toString('hex'), line, '1', '7') === 'BAD')
+  }
+  check('comparing with what was sent finds lost messages and claims of messages never sent', cmp.covered === 7 && cmp.missing.join() === '4' && cmp.claimedNotSent.length === 0 && lying === null && cmp2.claimedNotSent.join() === '50')
 }
 
 const network = 'boat-mqtt-test-' + process.pid
@@ -145,6 +172,42 @@ dev.on('message', (t, p) => got.dev.push([t, String(p)]))
 await app.publishAsync(to(app.publicKey, devKey, 'cmd'), 'relay=on', { qos: 1 })
 await until(() => got.dev.length >= 1)
 check('the device gets a command in its inbox, with the sender in the topic', got.dev.length === 1 && senderOf(got.dev[0][0]) === app.publicKey.toString('hex') && got.dev[0][1] === 'relay=on')
+
+// receipts from each hop: the device's node, and node B through its bridge
+{
+  const rDht = testnet.createNode()
+  const rd = await connect(A.publicKey, { dht: rDht })
+  const rk = rd.publicKey.toString('hex')
+  const fromA = []
+  await rd.subscribeAsync(inboxOf(rk), { qos: 1 })
+  rd.on('message', (topic, payload) => { if (topic === to(A.publicKey, rk, 'receipt')) fromA.push(String(payload)) })
+  const sent = []
+  for (let n = 1; n <= 10; n++) {
+    if (n === 5) continue // never sent
+    await rd.publishAsync(own(rk) + 'telemetry', sign(rd.keyPair.secretKey, own(rk) + 'telemetry', n, `m${n}`), { qos: 1 })
+    sent.push(BigInt(n))
+  }
+  await until(() => B.receipts.devices.get(rk)?.count === 9) // the bridge is a hop behind
+  for (const n of [A, B]) n.sendReceipts()
+  await until(() => fromA.length > 0)
+  const ra = openReceipt(fromA.at(-1), A.publicKey)
+  const ca = ra && compareReceipt(ra, sent)
+  check('the device\'s node sends it a signed receipt for what it got', ra && ra.count === 9 && ca.covered === 9 && ca.claimedNotSent.length === 0, ra && ra.ranges.map(([a, b]) => `${a}-${b}`).join(';'))
+  // anyone reads each hop's receipt, retained on that hop under its key
+  const hops = {}
+  const auditors = []
+  for (const n of [A, B]) {
+    const auditor = await connect(n.publicKey, { dht: testnet.createNode() })
+    auditor.on('message', (topic, payload) => { hops[topic.split('/')[1]] = openReceipt(String(payload)) })
+    await auditor.subscribeAsync(`d/${n.publicKey.toString('hex')}/receipts/${rk}`, { qos: 1 })
+    auditors.push(auditor)
+  }
+  await until(() => Object.keys(hops).length === 2)
+  const ha = hops[A.publicKey.toString('hex')]
+  const hb = hops[B.publicKey.toString('hex')]
+  check('the receipts of both hops (node A, and B through its bridge) are readable by anyone', ha && hb && ha.count === 9 && hb.count === 9 && hb.signer === B.publicKey.toString('hex'), `A ${ha && ha.count}, B ${hb && hb.count}`)
+  for (const c of [rd, ...auditors]) c.end(true)
+}
 
 // nodes that bridge each other do not loop
 const back = await A.bridge(B.publicKey, ['d/+/telemetry'])
@@ -226,11 +289,14 @@ await C.close()
     return { ...a, signature: eth.signTransfer(domain, a, key) }
   }
 
-  for (let i = 0; i < 10; i++) await d.publishAsync(own(devKey) + 'telemetry', Buffer.alloc(100, i), { qos: 1 })
+  // signed messages of 100 bytes: 74 of signature and sequence, 26 of reading
+  for (let i = 0; i < 10; i++) await d.publishAsync(own(devKey) + 'telemetry', sign(devKp.secretKey, own(devKey) + 'telemetry', i + 1, Buffer.alloc(26, i)), { qos: 1 })
   const owed = 10n * 100n + (1000n * 1000n + 1023n) / 1024n // 10 messages of 100 bytes
   await until(() => invoices.some((i) => BigInt(i.owed) === owed), 3000)
   const full = invoices.find((i) => BigInt(i.owed) === owed)
   check('the node meters and sends invoices', full && full.due === String(owed) && full.pay === PAYEE && invoices.length >= 2, `owed ${owed}, ${invoices.length} invoices (one at half the credit)`)
+  const billed = openReceipt(full.receipt, P.publicKey)
+  check('an invoice carries the node\'s signed receipt, which matches the bill', billed && billed.count === 10 && billed.bytes === 1000 && 100n * BigInt(billed.count) + (1000n * BigInt(billed.bytes) + 1023n) / 1024n === owed)
 
   const bad = [
     [authorize(owed + 1n), 'more than due'],

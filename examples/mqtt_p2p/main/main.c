@@ -47,6 +47,8 @@ static uint64_t record_seq;
 static esp_mqtt_client_handle_t mqtt;
 static esp_transport_handle_t transport;
 static volatile bool connected;
+static volatile uint32_t sent_ok; // signed telemetry the client took, this boot
+static volatile uint64_t last_seq;
 
 // Loads the 32-byte key seed from NVS, creating it on first boot, and counts
 // boots (for rising sequence numbers).
@@ -155,6 +157,23 @@ on_mqtt (void *arg, esp_event_base_t base, int32_t id, void *data) {
     char sender[65];
     memcpy(sender, topic + 2, 64);
     sender[64] = 0;
+    // a receipt from the node we are on: what it signs it got from us
+    hdht_mqtt_info_t info;
+    hdht_mqtt_get_info(transport, &info);
+    char node_hex[65];
+    sodium_bin2hex(node_hex, sizeof(node_hex), info.node, 32);
+    size_t rest_len = strlen(topic + 2 + 64 + 1);
+    if (strcmp(sender, node_hex) == 0 && rest_len > 8 && strcmp(topic + n - 8, "/receipt") == 0) {
+      hdht_mqtt_receipt_t r;
+      uint64_t covered = 0, beyond = 0, lo = (uint64_t) boot << 32;
+      bool ok = hdht_mqtt_receipt_open(info.node, pk, e->data, e->data_len, &r) == 0 &&
+                hdht_mqtt_receipt_check(e->data, e->data_len, lo, sent_ok ? last_seq : lo, &covered, &beyond) == 0;
+      if (!sent_ok) covered = 0;
+      printf("MQTT|receipt from node %.12s...: %s, node counts %llu msgs %llu bytes; covers %llu of the %u we sent this boot%s\n", sender, ok ? "signature ok" : "BAD",
+             (unsigned long long) r.count, (unsigned long long) r.bytes, (unsigned long long) covered, (unsigned) sent_ok,
+             beyond ? ", and CLAIMS MESSAGES WE NEVER SENT" : "");
+      break;
+    }
     printf("MQTT|message from=%.12s... topic=%s payload=%.*s\n", sender, topic + 2 + 64 + 1, e->data_len, e->data);
 
     char reply_topic[200], reply[160];
@@ -185,9 +204,14 @@ telemetry_task (void *arg) {
     int len = snprintf(msg, sizeof(msg), "{\"seq\":%u,\"uptime\":%u,\"heap\":%u}", seq, uptime_s(), (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT));
 #if CONFIG_MQTT_P2P_SIGN
     int64_t t0 = esp_timer_get_time();
-    int n = hdht_mqtt_sign(sk, topic, ((uint64_t) boot << 32) | seq, (const uint8_t *) msg, (size_t) len, sealed, sizeof(sealed));
+    uint64_t s = ((uint64_t) boot << 32) | seq;
+    int n = hdht_mqtt_sign(sk, topic, s, (const uint8_t *) msg, (size_t) len, sealed, sizeof(sealed));
     unsigned sign_us = (unsigned) (esp_timer_get_time() - t0);
     int id = esp_mqtt_client_publish(mqtt, topic, (const char *) sealed, n, 1, 0);
+    if (id >= 0) {
+      last_seq = s;
+      sent_ok++;
+    }
     printf("MQTT|telemetry seq=%u msg_id=%d signed in %u us\n", seq++, id, sign_us);
 #else
     int id = esp_mqtt_client_publish(mqtt, topic, msg, len, 1, 0);
