@@ -1,0 +1,14 @@
+CONFIG_IDF_TARGET="esp32c3"
+
+# WiFi + libsodium + hdht is ~1.03 MB, more than the default 1 MB app partition
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Required by hdht (see the main README)
+CONFIG_FREERTOS_HZ=1000
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
+
+# WiFi via ESP-IDF's example helper; use your own connection code in a real product
+CONFIG_EXAMPLE_CONNECT_WIFI=y
+CONFIG_EXAMPLE_CONNECT_IPV6=n
+CONFIG_EXAMPLE_PROVIDE_WIFI_CONSOLE_CMD=n

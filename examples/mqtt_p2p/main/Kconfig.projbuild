@@ -1,0 +1,15 @@
+menu "MQTT over HyperDHT"
+
+config MQTT_P2P_NODE
+    string "Network name, or a node's public key in hex"
+    default "boat-mqtt"
+    help
+        A network name: the device looks up BLAKE2b-256(name) on HyperDHT and
+        connects to one of the nodes announced there (packages/boat-mqtt-node).
+        64 hex characters: that node only.
+
+config MQTT_P2P_INTERVAL
+    int "Seconds between telemetry messages"
+    default 5
+
+endmenu

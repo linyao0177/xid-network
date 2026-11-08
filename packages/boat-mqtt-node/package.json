@@ -1,0 +1,32 @@
+{
+  "name": "boat-mqtt-node",
+  "version": "0.1.0",
+  "description": "An MQTT broker node anyone can run, reached over HyperDHT by public key: devices (BoAT on ESP32, or any HyperDHT peer) find nodes by topic and log in with their key, and only the holder of a key may publish under it",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package": "./package.json"
+  },
+  "bin": {
+    "boat-mqtt-node": "bin/boat-mqtt-node.js"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "bin"
+  ],
+  "scripts": {
+    "test": "node test/run.js"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "aedes": "1.2.0",
+    "hyperdht": "6.36.0",
+    "mqtt": "5.16.1",
+    "sodium-universal": "5.0.1"
+  }
+}
