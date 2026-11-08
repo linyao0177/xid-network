@@ -2,6 +2,7 @@ import HyperDHT from 'hyperdht'
 import mqtt from 'mqtt'
 import { toNode } from './stream.js'
 import { topicOf, NETWORK, hex } from './topics.js'
+import { homeOf } from './home.js'
 
 // Finds the nodes announced for a network: their public keys, in random order.
 export async function findNodes (dht, network = NETWORK) {
@@ -92,4 +93,15 @@ function shuffle (a) {
     [a[i], a[j]] = [a[j], a[i]]
   }
   return a
+}
+
+// Connects to a device's home node, named in its record: where to send it
+// messages, so they reach it without a bridge.
+export async function connectHome (deviceKey, opts = {}) {
+  const dht = opts.dht || new HyperDHT({ bootstrap: opts.bootstrap })
+  const home = await homeOf(dht, deviceKey)
+  if (!home) throw new Error('no home node in the record of ' + hex(deviceKey).slice(0, 12))
+  const client = await connect(home, { ...opts, dht })
+  if (!opts.dht) client.on('end', () => dht.destroy())
+  return client
 }

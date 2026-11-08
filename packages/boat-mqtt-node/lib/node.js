@@ -5,6 +5,8 @@ import { Aedes } from 'aedes'
 import { toNode } from './stream.js'
 import { topicOf, senderOf, NETWORK, hex } from './topics.js'
 import { connect } from './client.js'
+import { homeOf } from './home.js'
+import { Billing } from './billing.js'
 
 const BRIDGED = '$bridge' // marks packets a bridge brought in from another node
 const ANNOUNCE_MS = 10 * 60 * 1000 // DHT nodes keep an announcement for 20 minutes
@@ -24,6 +26,10 @@ const BAD_USER_OR_PASSWORD = 4
 // - opts.tcp opens a plain TCP listener for the operator's own apps, with
 //   opts.users = { name: password }. They may not publish under d/.
 // - bridge() pulls topics from another node over HyperDHT.
+// - Following (opts.follow, on by default): when a client subscribes to a
+//   device by key (d/<key>/...), and the device's record names another node
+//   as its home, this node bridges d/<key>/# from that node.
+// - opts.billing charges per message and takes EIP-3009 payments (billing.js).
 export async function createNode (opts = {}) {
   const node = new BoatMqttNode(opts)
   await node.ready()
@@ -47,6 +53,10 @@ export class BoatMqttNode extends EventEmitter {
     this._authorizeSubscribe = opts.authorizeSubscribe || null
     this._usage = new Map()
     this._timer = null
+    this.follow = opts.follow !== false
+    this._following = new Map() // device key hex -> home key hex (or null while resolving)
+    this._homes = new Map() // home key hex -> Promise<bridge client>
+    this.billing = opts.billing ? new Billing(this, opts.billing) : null
   }
 
   async ready () {
@@ -58,6 +68,7 @@ export class BoatMqttNode extends EventEmitter {
       authorizePublish (client, packet, done) { node._authorizePublish(client, packet, done) },
       authorizeSubscribe (client, sub, done) {
         if (sub.topic.startsWith('$') && !sub.topic.startsWith('$SYS/')) return done(new Error('reserved topic'))
+        if (node.follow && !client.bridge) node._follow(sub.topic)
         node._authorizeSubscribe ? node._authorizeSubscribe(client, sub, done) : done(null, sub)
       },
       authorizeForward (client, packet) {
@@ -83,6 +94,8 @@ export class BoatMqttNode extends EventEmitter {
         this.tcpServer.listen(this.tcp.port, this.tcp.host || '127.0.0.1', resolve)
       })
     }
+
+    if (this.billing) await this.billing.start()
 
     if (this.network !== null) {
       await this._announce()
@@ -128,6 +141,11 @@ export class BoatMqttNode extends EventEmitter {
     } else if (topic.startsWith('d/')) {
       reason = 'd/ is for HyperDHT clients'
     }
+    if (!reason && client.key && this.billing) {
+      const m = this.billing.meter(client.key, topic, packet.payload.length)
+      if (!m.ok) reason = m.reason
+      else if (m.free) this.billing.pay(client.key, packet.payload).catch(() => {})
+    }
     if (reason) {
       this.emit('refused', { client: describe(client), topic, reason })
       return done(new Error(reason)) // MQTT 3.1.1: the node closes the connection
@@ -150,7 +168,7 @@ export class BoatMqttNode extends EventEmitter {
   // over (one hop), so nodes that bridge each other do not loop.
   async bridge (remoteKey, filters = ['d/+/telemetry'], opts = {}) {
     const client = await connect(remoteKey, { ...opts, dht: this.dht, keyPair: this.keyPair, clientId: hex(this.publicKey) + '-bridge' })
-    await client.subscribeAsync(filters, { qos: 1 })
+    if (filters.length) await client.subscribeAsync(filters, { qos: 1 })
     client.on('message', (topic, payload, packet) => {
       this.broker.publish({ cmd: 'publish', topic, payload, qos: packet.qos, retain: false, clientId: BRIDGED }, () => {})
     })
@@ -159,8 +177,43 @@ export class BoatMqttNode extends EventEmitter {
     return client
   }
 
+  // a subscription to d/<key>/...: bridge that device from its home node
+  async _follow (filter) {
+    const m = /^d\/([0-9a-f]{64})(\/|$)/.exec(filter)
+    if (!m || this._following.has(m[1])) return
+    const key = m[1]
+    this._following.set(key, null)
+    try {
+      const home = await homeOf(this.dht, key)
+      if (!home) throw new Error('no home node in its record')
+      if (home.equals(this.publicKey)) {
+        this._following.set(key, hex(home))
+        return
+      }
+      const h = hex(home)
+      if (!this._homes.has(h)) {
+        const p = this.bridge(home, [])
+        this._homes.set(h, p)
+        p.then((c) => c.on('end', () => this._homes.delete(h)), () => this._homes.delete(h))
+      }
+      const bridge = await this._homes.get(h)
+      await bridge.subscribeAsync(`d/${key}/#`, { qos: 1 })
+      this._following.set(key, h)
+      this.emit('follow', { key, home: h })
+    } catch (err) {
+      this._following.delete(key) // tried again on the next subscription
+      this.emit('follow-error', { key, error: err })
+    }
+  }
+
+  // device key hex -> home node key hex, for the devices this node follows
+  following () {
+    return Object.fromEntries([...this._following].filter(([, v]) => v))
+  }
+
   async close () {
     clearInterval(this._timer)
+    if (this.billing) this.billing.stop()
     for (const b of this.bridges) b.end(true)
     if (this.network !== null) await this.dht.unannounce(this.topic, this.keyPair).catch(() => {})
     await this.server.close()

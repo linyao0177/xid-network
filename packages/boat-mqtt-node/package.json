@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "aedes": "1.2.0",
+    "boat-peer": "file:../boat-peer",
     "hyperdht": "6.36.0",
     "mqtt": "5.16.1",
     "sodium-universal": "5.0.1"

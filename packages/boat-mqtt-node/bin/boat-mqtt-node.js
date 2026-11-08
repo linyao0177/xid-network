@@ -4,11 +4,15 @@
 // usage: boat-mqtt-node [--key node.json] [--network boat-mqtt | --no-announce]
 //                       [--tcp 1883 [--tcp-host 127.0.0.1] --users users.json]
 //                       [--bridge <node key>[=filter,filter]]... [--bootstrap host:port,...]
-//                       [--stats 60]
+//                       [--no-follow] [--stats 60]
 //
 // --key: { "seed": hex }, created when missing; keeps the node's public key.
 // --users: { "name": "password" } for TCP apps (they may not publish under d/).
 // --bridge: pull these filters (default d/+/telemetry) from another node.
+// --no-follow: do not bridge devices from the home node in their records
+// when a client subscribes to them by key.
+// Charging per message needs a payee and settlement: see
+// packages/wdk-protocol-boat-evm/examples/mqtt-node.js.
 
 import fs from 'fs'
 import { createNode } from '../index.js'
@@ -35,6 +39,7 @@ const node = await createNode({
   network,
   bootstrap,
   users,
+  follow: !args.includes('--no-follow'),
   tcp: tcpPort ? { port: Number(tcpPort), host: opt('tcp-host', '127.0.0.1') } : null
 })
 log(`node ${node.publicKey.toString('hex')}`)
@@ -43,6 +48,8 @@ if (node.tcp) log(`TCP on ${node.tcp.host || '127.0.0.1'}:${node.tcp.port} for $
 
 node.on('client', (c) => log(`+ ${c.key ? 'key ' + short(c.key) : 'tcp ' + c.user}${c.bridge ? ' (bridge)' : ''} id ${short(c.id)}`))
 node.on('clientDisconnect', (c) => log(`- ${c.key ? 'key ' + short(c.key) : 'tcp ' + c.user}`))
+node.on('follow', (f) => log(`following ${short(f.key)} from its home node ${short(f.home)}`))
+node.on('follow-error', (f) => log(`cannot follow ${short(f.key)}: ${f.error.message}`))
 node.on('refused', (r) => log(`REFUSED ${r.client.key ? 'key ' + short(r.client.key) : 'tcp ' + r.client.user} -> ${r.topic}: ${r.reason}`))
 
 // a bridge to a node that is not up yet is retried every 10 s

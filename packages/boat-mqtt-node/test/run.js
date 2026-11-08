@@ -7,9 +7,18 @@
 // session takeover, a bad TCP login, a TCP app that writes under d/.
 
 import net from 'net'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { execFileSync } from 'child_process'
+import HyperDHT from 'hyperdht'
 import createTestnet from 'hyperdht/testnet.js'
 import mqtt from 'mqtt'
-import { createNode, connect, findNodes, own, to, inboxOf, senderOf } from '../index.js'
+import crypto from 'crypto'
+import { createRequire } from 'module'
+import { createNode, connect, connectHome, findNodes, own, to, inboxOf, senderOf, sign, open, SignedInbox, homeOf, publishHome } from '../index.js'
+
+const { eth, makeRecord } = createRequire(import.meta.url)('boat-peer')
 
 let passed = 0
 let failed = 0
@@ -41,6 +50,45 @@ const closedWithin = (c, ms) => new Promise((resolve) => {
 const freePort = () => new Promise((resolve) => {
   const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)) })
 })
+
+// signed messages, in JS and in the device's C (components/hdht_mqtt/signed.c)
+{
+  const seed = Buffer.alloc(32, 7)
+  const kp = HyperDHT.keyPair(seed)
+  const key = kp.publicKey.toString('hex')
+  const topic = own(key) + 'telemetry'
+  const msg = sign(kp.secretKey, topic, 42n, '{"kwh":1.5}')
+  const opened = open(kp.publicKey, topic, msg)
+  check('a signed message opens with its key and topic', opened && opened.seq === 42n && String(opened.payload) === '{"kwh":1.5}')
+  const tampered = Buffer.from(msg)
+  tampered[tampered.length - 1] ^= 1
+  check('a changed payload, topic or key does not open', !open(kp.publicKey, topic, tampered) && !open(kp.publicKey, own(key) + 'other', msg) && !open(HyperDHT.keyPair().publicKey, topic, msg))
+  const inbox = new SignedInbox()
+  const a = inbox.check(topic, sign(kp.secretKey, topic, 1, 'a'))
+  const b = inbox.check(topic, sign(kp.secretKey, topic, 2, 'b'))
+  const again = inbox.check(topic, sign(kp.secretKey, topic, 2, 'b'))
+  check('SignedInbox refuses a sequence number seen before', a.ok && b.ok && !again.ok && again.reason === 'replayed')
+
+  const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', 'components', 'hdht_mqtt')
+  const sodium = ['/opt/homebrew', '/usr/local', '/usr'].find((p) => fs.existsSync(path.join(p, 'include', 'sodium.h')))
+  const bin = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hdht-mqtt-')), 'test_signed')
+  let built = false
+  if (sodium) {
+    try {
+      execFileSync('clang', ['-O1', '-Wall', '-I' + path.join(dir, 'include'), '-I' + path.join(sodium, 'include'), path.join(dir, 'signed.c'), path.join(dir, 'test', 'test_signed.c'), '-L' + path.join(sodium, 'lib'), '-lsodium', '-o', bin])
+      built = true
+    } catch {}
+  }
+  if (built) {
+    const c = (...args) => execFileSync(bin, args).toString().trim()
+    const fromC = Buffer.from(c('sign', seed.toString('hex'), topic, '18446744073709551615', 'from C'), 'hex')
+    const o = open(kp.publicKey, topic, fromC)
+    check('C signs, JS opens (seq up to 2^64-1)', o && o.seq === 18446744073709551615n && String(o.payload) === 'from C')
+    check('JS signs, C opens; C refuses a changed one', c('open', key, topic, msg.toString('hex')) === '42 {"kwh":1.5}' && c('open', key, topic, tampered.toString('hex')) === 'BAD')
+  } else {
+    console.log('SKIP the C side of signed messages: no clang or libsodium')
+  }
+}
 
 const network = 'boat-mqtt-test-' + process.pid
 const testnet = await createTestnet(3)
@@ -107,6 +155,114 @@ await dev2.publishAsync(own(dev2.publicKey) + 'telemetry', 'from-b', { qos: 1 })
 await until(() => got.app.length > before)
 await sleep(1500)
 check('A and B bridging each other: one copy each, no loop', got.app.length === before + 1 && got.b.length === bBefore + 1, `A +${got.app.length - before}, B +${got.b.length - bBefore}`)
+
+// following: a node with no bridges gets a subscription to a device by key,
+// finds its home node in the device's record and bridges from there
+const C = await createNode({ dht: testnet.createNode(), network: null })
+const followed = []
+C.on('follow', (f) => followed.push(f))
+const homeDht = testnet.createNode()
+const homeDev = await connect(A.publicKey, { dht: homeDht })
+const hk = homeDev.publicKey.toString('hex')
+await publishHome(homeDht, homeDev.keyPair, A.publicKey)
+check('homeOf reads the home node from the device record', (await homeOf(dhtApp, hk))?.equals(A.publicKey))
+const onC = await connect(C.publicKey, { dht: testnet.createNode() })
+const viaC = []
+const signedInbox = new SignedInbox()
+onC.on('message', (t, p) => viaC.push(signedInbox.check(t, p)))
+await onC.subscribeAsync(own(hk) + 'telemetry', { qos: 1 })
+await until(() => followed.length > 0)
+check('node C follows the device to its home node', followed[0]?.key === hk && followed[0]?.home === A.publicKey.toString('hex'), JSON.stringify(C.following()).slice(0, 40))
+for (let i = 1; i <= 5; i++) await homeDev.publishAsync(own(hk) + 'telemetry', sign(homeDev.keyPair.secretKey, own(hk) + 'telemetry', i, `r${i}`), { qos: 1 })
+await until(() => viaC.length >= 5)
+check('signed telemetry arrives on C and checks out', viaC.length === 5 && viaC.every((r, i) => r.ok && r.seq === BigInt(i + 1) && String(r.payload) === `r${i + 1}`))
+// a node in the path that changes a message, or plays one again
+C.broker.publish({ cmd: 'publish', topic: own(hk) + 'telemetry', payload: sign(homeDev.keyPair.secretKey, own(hk) + 'telemetry', 3, 'r3'), qos: 0, retain: false }, () => {})
+const forgedPayload = sign(homeDev.keyPair.secretKey, own(hk) + 'telemetry', 9, 'r9')
+forgedPayload[forgedPayload.length - 1] ^= 1
+C.broker.publish({ cmd: 'publish', topic: own(hk) + 'telemetry', payload: forgedPayload, qos: 0, retain: false }, () => {})
+await until(() => viaC.length >= 7)
+check('a replayed or changed message from a node is caught', viaC[5]?.reason === 'replayed' && viaC[6]?.reason === 'bad signature')
+// a command goes straight to the device's home node
+const homeIn = []
+await homeDev.subscribeAsync(inboxOf(hk), { qos: 1 })
+homeDev.on('message', (t, p) => homeIn.push(t))
+const sender = await connectHome(hk, { dht: testnet.createNode() })
+await sender.publishAsync(to(sender.publicKey, hk), 'go', { qos: 1 })
+await until(() => homeIn.length > 0)
+check('connectHome reaches the device at its home node', sender.node.equals(A.publicKey) && homeIn.length === 1)
+for (const c of [onC, sender, homeDev]) c.end(true)
+await C.close()
+
+// billing: a node that charges per message, and a device that pays its invoices
+{
+  const PAYEE = '0x1e6a1664aa7c2b2dbbd2e8e4b8e0f1a7c5d7e9f1'
+  const TOKEN = '0x78Cf24370174180738C5B8E352B6D14c83a6c9A9'
+  const domain = { name: 'USD₮0', version: '1', chainId: 2201, verifyingContract: TOKEN }
+  const P = await createNode({ dht: testnet.createNode(), network: null, billing: { price: { message: 100, kb: 1000 }, credit: 3000, payee: PAYEE, token: TOKEN, chainId: 2201, domain: { name: 'USD₮0', version: '1' }, invoiceMs: 400 } })
+  P.on('refused', (r) => refusals.push(r))
+  const pk = P.publicKey.toString('hex')
+  const terms = await dhtApp.mutableGet(P.publicKey, { latest: true })
+  const t = JSON.parse(terms.value)
+  check('the node puts its terms in its record', t.pay === PAYEE && t.price_msg === '100' && t.price_kb === '1000' && t.credit === '3000' && t.domain_name === 'USD₮0')
+
+  const devDht = testnet.createNode()
+  const devKp = HyperDHT.keyPair()
+  const devKey = devKp.publicKey.toString('hex')
+  const wallet = crypto.randomBytes(32)
+  const record = { ...makeRecord(devKp.publicKey, wallet), mqtt: pk }
+  await devDht.mutablePut(devKp, Buffer.from(JSON.stringify(record)), { seq: 1 })
+  const d = await connect(P.publicKey, { dht: devDht, keyPair: devKp })
+  const invoices = []
+  await d.subscribeAsync(inboxOf(devKey), { qos: 1 })
+  d.on('message', (topic, payload) => { if (topic.endsWith('/invoice')) invoices.push(JSON.parse(payload)) })
+  const payments = []
+  const refusedPays = []
+  P.billing.on('payment', (p) => payments.push(p))
+  P.billing.on('payment-refused', (r) => refusedPays.push(r.reason))
+  const payTopic = to(devKey, pk, 'pay')
+  const authorize = (value, { key = wallet, validBefore = Math.floor(Date.now() / 1000) + 3600, nonce = '0x' + crypto.randomBytes(32).toString('hex') } = {}) => {
+    const a = { from: eth.addressOf(key), to: PAYEE, value: String(value), validAfter: 0, validBefore, nonce }
+    return { ...a, signature: eth.signTransfer(domain, a, key) }
+  }
+
+  for (let i = 0; i < 10; i++) await d.publishAsync(own(devKey) + 'telemetry', Buffer.alloc(100, i), { qos: 1 })
+  const owed = 10n * 100n + (1000n * 1000n + 1023n) / 1024n // 10 messages of 100 bytes
+  await until(() => invoices.some((i) => BigInt(i.owed) === owed), 3000)
+  const full = invoices.find((i) => BigInt(i.owed) === owed)
+  check('the node meters and sends invoices', full && full.due === String(owed) && full.pay === PAYEE && invoices.length >= 2, `owed ${owed}, ${invoices.length} invoices (one at half the credit)`)
+
+  const bad = [
+    [authorize(owed + 1n), 'more than due'],
+    [authorize(500, { key: crypto.randomBytes(32) }), 'another wallet'],
+    [authorize(500, { validBefore: Math.floor(Date.now() / 1000) + 30 }), 'expiring'],
+    [{ ...authorize(500), to: '0x' + '22'.repeat(20) }, 'another payee']
+  ]
+  for (const [a] of bad) await d.publishAsync(payTopic, JSON.stringify(a), { qos: 1 })
+  await until(() => refusedPays.length >= bad.length)
+  check('payments that pay too much, from another wallet, expiring or elsewhere are refused', refusedPays.length === bad.length && payments.length === 0, refusedPays.join('; ').slice(0, 120))
+
+  const good = authorize(owed)
+  await d.publishAsync(payTopic, JSON.stringify({ ...good, invoice: full.invoice }), { qos: 1 })
+  await until(() => payments.length === 1)
+  check('a payment signed by the wallet in the DID record is accepted', payments.length === 1 && payments[0].authorization.value === String(owed) && P.billing.due(devKey) === 0n)
+  await d.publishAsync(payTopic, JSON.stringify(good), { qos: 1 })
+  await until(() => refusedPays.length > bad.length)
+  check('the same authorization again is refused', payments.length === 1 && refusedPays.length === bad.length + 1)
+
+  // over the credit: refused and disconnected; paying lets it publish again
+  for (let i = 0; i < 25 && d.connected; i++) d.publish(own(devKey) + 'telemetry', Buffer.alloc(100), { qos: 0 })
+  const cut = await closedWithin(d, 5000)
+  check('over the credit, the node refuses and disconnects', cut && refusals.some((r) => r.reason === 'payment required'))
+  await until(() => d.connected, 10000)
+  const due = P.billing.due(devKey)
+  await d.publishAsync(payTopic, JSON.stringify(authorize(due)), { qos: 1 })
+  await until(() => payments.length === 2)
+  await d.publishAsync(own(devKey) + 'telemetry', 'after paying', { qos: 1 })
+  check('after paying it publishes again', payments.length === 2 && d.connected && P.billing.summary()[devKey].paid === String(owed + due), JSON.stringify(P.billing.summary()[devKey]))
+  d.end(true)
+  await P.close()
+}
 
 // refusals
 const evil = await connect(A.publicKey, { dht: dhtEvil })

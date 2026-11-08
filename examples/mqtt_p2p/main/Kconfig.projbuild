@@ -12,4 +12,12 @@ config MQTT_P2P_INTERVAL
     int "Seconds between telemetry messages"
     default 5
 
+config MQTT_P2P_SIGN
+    bool "Sign telemetry with the device key"
+    default y
+    help
+        Each telemetry message carries the device's Ed25519 signature over the
+        topic, a sequence number and the payload (hdht_mqtt_sign), so apps can
+        check it whatever node or bridge it came through.
+
 endmenu

@@ -1,4 +1,7 @@
 export { createNode, BoatMqttNode } from './lib/node.js'
-export { connect, findNodes } from './lib/client.js'
+export { connect, connectHome, findNodes } from './lib/client.js'
+export { homeOf, publishHome } from './lib/home.js'
 export { toNode } from './lib/stream.js'
 export { NETWORK, topicOf, own, to, inboxOf, senderOf } from './lib/topics.js'
+export { sign, open, SignedInbox, OVERHEAD } from './lib/signed.js'
+export { Billing } from './lib/billing.js'
