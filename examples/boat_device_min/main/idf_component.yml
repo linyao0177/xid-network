@@ -1,0 +1,18 @@
+# hyperdht-esp32's components, from this checkout. In your own project, list
+# tlay/boat_device with a version instead (it brings hdht and hdht_mqtt).
+dependencies:
+  tlay/boat_device:
+    version: "0.1.0"
+    override_path: "../../../components/boat_device"
+  tlay/hdht:
+    version: "0.1.0"
+    override_path: "../../../components/hdht"
+  tlay/hdht_mqtt:
+    version: "0.1.0"
+    override_path: "../../../components/hdht_mqtt"
+  tlay/libudx:
+    version: "0.1.0"
+    override_path: "../../../components/libudx"
+  tlay/uv_esp:
+    version: "0.1.0"
+    override_path: "../../../components/uv_esp"

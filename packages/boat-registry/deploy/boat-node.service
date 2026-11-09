@@ -1,0 +1,23 @@
+# systemd unit for boat-node (deploy/install.sh puts it in place).
+[Unit]
+Description=boat-node: a node of the BoAT network (forward, store, verify, compute)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=boat
+Group=boat
+ExecStart=/usr/bin/env node /opt/boat-node/boat-registry/bin/boat-node.js run /var/lib/boat-node
+Restart=always
+RestartSec=5
+# remote RPCs behind a proxy: Environment=HTTPS_PROXY=http://127.0.0.1:1087
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/boat-node
+StateDirectory=boat-node
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

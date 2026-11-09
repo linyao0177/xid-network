@@ -11,6 +11,15 @@
 //   message to its sender.
 // - Telemetry is signed with the device key (CONFIG_MQTT_P2P_SIGN), so an app
 //   can check it whatever node or bridge it came through.
+// - A simulated meter (CONFIG_MQTT_P2P_METER): a load of CONFIG_MQTT_P2P_LOAD_W
+//   behind a relay. Telemetry carries the energy delivered so far, "mwh"
+//   (milliwatt-hours, counting only while the relay is on), and "relay".
+//   Only the owner (CONFIG_MQTT_P2P_OWNER, a public key) switches the relay,
+//   with "on" or "off" to d/<owner>/to/<device>/relay. Bills are computed from
+//   the signed readings by compute nodes (packages/boat-registry).
+// - Node list (CONFIG_MQTT_P2P_VERIFIERS): the device reads the records of the
+//   verifiers it trusts and connects only to the staked nodes a quorum of
+//   them lists (components/hdht_mqtt nodelist), every 10 minutes again.
 // - Each time it connects, the device puts its record on the DHT naming that
 //   node as its home: {"v":1,"did":"did:mw:<key>","mqtt":"<node key>"}. A node
 //   that gets a subscription to the device follows it there, and apps send it
@@ -32,6 +41,7 @@
 
 #include "hdht.h"
 #include "hdht_mqtt.h"
+#include "driver/gpio.h"
 
 static uv_loop_t loop;
 static hdht_t dht;
@@ -48,7 +58,14 @@ static esp_mqtt_client_handle_t mqtt;
 static esp_transport_handle_t transport;
 static volatile bool connected;
 static volatile uint32_t sent_ok; // signed telemetry the client took, this boot
+static volatile bool relay_on = true;
+#if CONFIG_MQTT_P2P_METER
+static uint64_t mwh; // energy delivered, the telemetry task only
+static uint8_t owner[32];
+static bool has_owner;
+#endif
 static volatile uint64_t last_seq;
+static bool mqtt_started;
 
 // Loads the 32-byte key seed from NVS, creating it on first boot, and counts
 // boots (for rising sequence numbers).
@@ -175,6 +192,23 @@ on_mqtt (void *arg, esp_event_base_t base, int32_t id, void *data) {
       break;
     }
     printf("MQTT|message from=%.12s... topic=%s payload=%.*s\n", sender, topic + 2 + 64 + 1, e->data_len, e->data);
+#if CONFIG_MQTT_P2P_METER
+    // the relay: only the owner switches it
+    if (rest_len > 6 && strcmp(topic + n - 6, "/relay") == 0) {
+      uint8_t from[32];
+      bool is_owner = has_owner && sodium_hex2bin(from, 32, sender, 64, NULL, NULL, NULL) == 0 && memcmp(from, owner, 32) == 0;
+      if (!is_owner) {
+        printf("METER|relay command from %.12s... refused: not the owner\n", sender);
+        break;
+      }
+      if (e->data_len == 2 && memcmp(e->data, "on", 2) == 0) relay_on = true;
+      else if (e->data_len == 3 && memcmp(e->data, "off", 3) == 0) relay_on = false;
+      printf("METER|relay %s by the owner\n", relay_on ? "ON" : "OFF");
+#if CONFIG_MQTT_P2P_RELAY_GPIO >= 0
+      gpio_set_level(CONFIG_MQTT_P2P_RELAY_GPIO, relay_on);
+#endif
+    }
+#endif
 
     char reply_topic[200], reply[160];
     snprintf(reply_topic, sizeof(reply_topic), "d/%s/to/%s/ack", me, sender);
@@ -201,7 +235,12 @@ telemetry_task (void *arg) {
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(CONFIG_MQTT_P2P_INTERVAL * 1000));
     if (!connected) continue;
+#if CONFIG_MQTT_P2P_METER
+    if (relay_on) mwh += (uint64_t) CONFIG_MQTT_P2P_LOAD_W * CONFIG_MQTT_P2P_INTERVAL * 1000 / 3600; // W x s -> mWh
+    int len = snprintf(msg, sizeof(msg), "{\"seq\":%u,\"mwh\":%llu,\"relay\":%d,\"uptime\":%u}", seq, (unsigned long long) mwh, relay_on, uptime_s());
+#else
     int len = snprintf(msg, sizeof(msg), "{\"seq\":%u,\"uptime\":%u,\"heap\":%u}", seq, uptime_s(), (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT));
+#endif
 #if CONFIG_MQTT_P2P_SIGN
     int64_t t0 = esp_timer_get_time();
     uint64_t s = ((uint64_t) boot << 32) | seq;
@@ -223,14 +262,9 @@ telemetry_task (void *arg) {
 // the hdht task from here
 
 static void
-on_ready (hdht_t *d, int status) {
-  printf("bootstrapped (status %d, %u nodes)\n", status, d->table_len);
-
-  transport = hdht_mqtt_transport_new(d, NULL);
-  if (transport == NULL) {
-    printf("hdht_mqtt_transport_new failed\n");
-    return;
-  }
+start_mqtt (void) {
+  if (mqtt_started) return;
+  mqtt_started = true;
   esp_mqtt_client_config_t cfg = {
     .broker.address.hostname = CONFIG_MQTT_P2P_NODE,
     .network.transport = transport,
@@ -245,6 +279,28 @@ on_ready (hdht_t *d, int status) {
   printf("MQTT|starting, node %s\n", CONFIG_MQTT_P2P_NODE);
 
   xTaskCreate(telemetry_task, "telemetry", 3072, NULL, 4, NULL);
+}
+
+static void
+on_list_ready (bool taken, void *data) {
+  (void) taken;
+  (void) data;
+  start_mqtt(); // without a list, the transport looks the network name up
+}
+
+static void
+on_ready (hdht_t *d, int status) {
+  printf("bootstrapped (status %d, %u nodes)\n", status, d->table_len);
+
+  transport = hdht_mqtt_transport_new(d, NULL);
+  if (transport == NULL) {
+    printf("hdht_mqtt_transport_new failed\n");
+    return;
+  }
+  // the node list (CONFIG_MQTT_P2P_VERIFIERS): our key picks the page, so
+  // devices spread over the listed nodes; esp-mqtt starts once it is read
+  uint32_t pick = ((uint32_t) pk[0] << 24) | ((uint32_t) pk[1] << 16) | ((uint32_t) pk[2] << 8) | pk[3];
+  if (hdht_mqtt_nodelist_keep(d, transport, "mqtt_p2p", CONFIG_MQTT_P2P_VERIFIERS, pick, on_list_ready, NULL) != 0) start_mqtt();
 }
 
 static void
@@ -281,6 +337,15 @@ app_main (void) {
   if (sodium_init() < 0) return;
 
   ESP_ERROR_CHECK(load_seed(seed));
+#if CONFIG_MQTT_P2P_METER
+  has_owner = strlen(CONFIG_MQTT_P2P_OWNER) == 64 && sodium_hex2bin(owner, 32, CONFIG_MQTT_P2P_OWNER, 64, NULL, NULL, NULL) == 0;
+  printf("METER|load %d W behind a relay, owner %s\n", CONFIG_MQTT_P2P_LOAD_W, has_owner ? CONFIG_MQTT_P2P_OWNER : "(none: nobody can switch it)");
+#if CONFIG_MQTT_P2P_RELAY_GPIO >= 0
+  gpio_reset_pin(CONFIG_MQTT_P2P_RELAY_GPIO);
+  gpio_set_direction(CONFIG_MQTT_P2P_RELAY_GPIO, GPIO_MODE_OUTPUT);
+  gpio_set_level(CONFIG_MQTT_P2P_RELAY_GPIO, 1);
+#endif
+#endif
   hdht_keypair(pk, sk, seed);
   sodium_bin2hex(me, sizeof(me), pk, 32);
   printf("MQTT|device key %s\n", me);

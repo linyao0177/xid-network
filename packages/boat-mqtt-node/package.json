@@ -19,7 +19,7 @@
     "bin"
   ],
   "scripts": {
-    "test": "node test/run.js && node test/store.js && node test/gateway.js"
+    "test": "node test/run.js && node test/store.js && node test/sealed.js && node test/gateway.js"
   },
   "license": "MIT",
   "engines": {

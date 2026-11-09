@@ -1,0 +1,19 @@
+menu "BoAT device"
+
+config BOAT_VERIFIERS
+    string "Verify keys of the verifiers to trust for the node list (comma-separated hex)"
+    default ""
+    help
+        Empty: the device looks up the network name "boat-mqtt" instead.
+
+config BOAT_READERS
+    string "Ed25519 keys that may read sealed readings (comma-separated hex)"
+    default ""
+    help
+        The owner's key, compute nodes' work keys. Empty: readings are signed, not sealed.
+
+config BOAT_INTERVAL
+    int "Seconds between readings"
+    default 10
+
+endmenu

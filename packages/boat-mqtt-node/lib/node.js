@@ -162,6 +162,8 @@ export class BoatMqttNode extends EventEmitter {
       return done(new Error(reason)) // MQTT 3.1.1: the node closes the connection
     }
     if (client.key && this.receipts) this.receipts.add(client.key, packet.payload)
+    // what clients published here themselves (forwarding work, boat-registry)
+    if (client.key) this.emit('published', { key: client.key, topic, payload: packet.payload })
     const id = client.key || 'tcp:' + client.user
     const u = this._usage.get(id) || { messages: 0, bytes: 0 }
     u.messages++

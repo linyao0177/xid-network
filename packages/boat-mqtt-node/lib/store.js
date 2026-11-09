@@ -56,8 +56,10 @@ function replicationKeyPair (keyPair) {
 }
 
 // the query protocol, served by stores and mirrors: one JSON request per
-// message, one answer (boat-ota's wire encoding)
-function serveQueries (dht, keyPair, store, onrequest = () => {}) {
+// message, one answer (boat-ota's wire encoding). authorize(req, remote key
+// hex) -> null, or why a block is refused (a store that sells reads:
+// boat-registry lib/reads.js); index and head are free.
+function serveQueries (dht, keyPair, store, onrequest = () => {}, authorize = null) {
   const server = dht.createServer((conn) => {
     conn.on('error', () => {})
     conn.on('data', async (data) => {
@@ -71,7 +73,12 @@ function serveQueries (dht, keyPair, store, onrequest = () => {}) {
         const entry = await store.lookup(String(req.device))
         if (!entry) throw new Error('no such device')
         const core = await store.coreOf(entry)
-        if (req.op === 'index') {
+        if (req.op === 'find') {
+          // a message by sequence number (recent ones): its index
+          const index = store.find ? await store.find(String(req.device), String(req.seq)) : null
+          if (index === null || index === undefined) throw new Error('not held')
+          conn.write(Buffer.from(JSON.stringify({ index })))
+        } else if (req.op === 'index') {
           await core.update({ wait: false })
           conn.write(Buffer.from(JSON.stringify({ core: entry.core, signer: entry.signer, length: core.length })))
         } else if (req.op === 'head') {
@@ -82,6 +89,10 @@ function serveQueries (dht, keyPair, store, onrequest = () => {}) {
           const length = Number(req.length || core.length)
           if (!(index >= 0 && index < length && length <= core.length)) throw new Error('no such block')
           if (!(await core.has(index))) throw new Error('block not held')
+          if (authorize) {
+            const why = await authorize(req, conn.remotePublicKey ? conn.remotePublicKey.toString('hex') : null)
+            if (why) throw new Error(why)
+          }
           onrequest({ op: 'block', device: req.device, index })
           conn.write(wire.encodeBlock(await blockProof(core, index, length)))
         } else {
@@ -102,7 +113,8 @@ export async function createStore (opts) {
 }
 
 export class Store extends EventEmitter {
-  constructor ({ dht, bootstrap, keyPair, storage, devices = [], receiptMs = 5000 }) {
+  // authorize: see serveQueries; record: more fields for the store's record (its read terms)
+  constructor ({ dht, bootstrap, keyPair, storage, devices = [], receiptMs = 5000, refreshMs = 60000, authorize = null, record = {} }) {
     super()
     this.dht = dht || new HyperDHT({ bootstrap })
     this._ownDht = !dht
@@ -115,6 +127,10 @@ export class Store extends EventEmitter {
     this.receiptMs = receiptMs
     this.clients = new Map() // home hex -> Promise<mqtt client>
     this.stats = { stored: 0, rejected: 0, replayed: 0 }
+    this.homes = new Map() // device hex -> home hex, looked up again every refreshMs
+    this.refreshMs = refreshMs
+    this.authorize = authorize
+    this.extraRecord = record
   }
 
   async ready () {
@@ -122,7 +138,7 @@ export class Store extends EventEmitter {
     this.catalog = new Hyperbee(this.corestore.get({ name: 'catalog' }), { keyEncoding: 'utf-8', valueEncoding: 'json' })
     await this.catalog.ready()
     this.replicateKeyPair = replicationKeyPair(this.keyPair)
-    this.queries = await serveQueries(this.dht, this.keyPair, this, (r) => this.emit('request', r))
+    this.queries = await serveQueries(this.dht, this.keyPair, this, (r) => this.emit('request', r), this.authorize)
     this._conns = new Set()
     this.replicator = this.dht.createServer((conn) => {
       conn.on('error', () => {})
@@ -131,12 +147,29 @@ export class Store extends EventEmitter {
       this.corestore.replicate(conn)
     })
     await this.replicator.listen(this.replicateKeyPair)
-    const record = { v: '1', boat_store: '1', catalog: hex(this.catalog.core.key), replicate: hex(this.replicateKeyPair.publicKey) }
+    const record = { ...this.extraRecord, v: '1', boat_store: '1', catalog: hex(this.catalog.core.key), replicate: hex(this.replicateKeyPair.publicKey) }
     await this.dht.mutablePut(this.keyPair, Buffer.from(JSON.stringify(record)), { seq: Math.floor(Date.now() / 1000) })
     this._timer = setInterval(() => this._sendReceipts(), this.receiptMs)
     this._timer.unref()
+    if (this.refreshMs) {
+      // a device that moved to another home node is followed there
+      this._refreshTimer = setInterval(async () => {
+        for (const [key, h] of this.homes) {
+          const home = await homeOf(this.dht, key).catch(() => null)
+          if (home && hex(home) !== h) await this.follow(key).catch(() => {})
+        }
+      }, this.refreshMs)
+      this._refreshTimer.unref()
+    }
     for (const d of this.wanted) await this.follow(d)
     return this
+  }
+
+  // the index of a device's message by sequence number, or null
+  async find (device, seq) {
+    const d = this.devices.get(hex(device))
+    const i = d && d.bySeq.get(String(seq))
+    return i === undefined ? null : i
   }
 
   async lookup (device) {
@@ -155,13 +188,16 @@ export class Store extends EventEmitter {
     if (d) return d
     const core = this.corestore.get({ name: 'device/' + key })
     await core.ready()
-    d = { core, last: new Map() }
-    // after a restart: the newest seq per topic, from the core itself
+    d = { core, last: new Map(), bySeq: new Map() }
+    // after a restart: the newest seq per topic, and where recent messages
+    // are, from the core itself
     for (let i = core.length - 1; i >= 0 && i >= core.length - 1000; i--) {
       const block = await core.get(i, { wait: false }) // a block cleared or lost is skipped
       if (!block) continue
       const e = decodeEntry(block)
-      if (!d.last.has(e.topic)) d.last.set(e.topic, Buffer.from(e.message).readBigUInt64BE(2))
+      const seq = Buffer.from(e.message).readBigUInt64BE(2)
+      if (!d.last.has(e.topic)) d.last.set(e.topic, seq)
+      if (!d.bySeq.has(String(seq))) d.bySeq.set(String(seq), i)
     }
     if (!(await this.catalog.get(key))) await this.catalog.put(key, { core: hex(core.key), signer: hex(core.manifest.signers[0].publicKey) })
     this.devices.set(key, d)
@@ -186,6 +222,7 @@ export class Store extends EventEmitter {
     }
     const client = await this.clients.get(h)
     await client.subscribeAsync(`d/${key}/#`, { qos: 1 })
+    this.homes.set(key, h)
     this.emit('follow', { device: key, home: h })
   }
 
@@ -206,9 +243,12 @@ export class Store extends EventEmitter {
     }
     d.last.set(topic, m.seq)
     const index = (await d.core.append(encodeEntry(topic, payload))).length - 1
+    // where a message is, by sequence number (one counter per device), for the last 10,000
+    d.bySeq.set(String(m.seq), index)
+    if (d.bySeq.size > 10000) d.bySeq.delete(d.bySeq.keys().next().value)
     this.receipts.add(from, payload)
     this.stats.stored++
-    this.emit('stored', { device: from, topic, seq: m.seq, index })
+    this.emit('stored', { device: from, topic, seq: m.seq, index, payload })
   }
 
   async _sendReceipts () {
@@ -223,6 +263,7 @@ export class Store extends EventEmitter {
 
   async close () {
     clearInterval(this._timer)
+    clearInterval(this._refreshTimer)
     for (const p of this.clients.values()) (await p.catch(() => null))?.end(true)
     for (const c of this._conns) c.destroy() // replication sessions hold the cores open
     await this.queries.close()
@@ -287,8 +328,8 @@ export async function createMirror ({ dht, keyPair, storage, store }) {
 
 // ---- reading and checking a store (or a mirror) ----------------------------
 
-async function ask (dht, server) {
-  const conn = dht.connect(Buffer.from(hex(server), 'hex'))
+async function ask (dht, server, keyPair = null) {
+  const conn = dht.connect(Buffer.from(hex(server), 'hex'), keyPair ? { keyPair } : undefined)
   const waiting = []
   conn.on('data', (data) => { const w = waiting.shift(); if (w) w(data) })
   conn.on('error', () => {})
@@ -307,9 +348,11 @@ const failure = (data) => data[0] === 0x45 ? data.subarray(1).toString() : null
 
 // opens a device's log on a store or mirror: { length, head, block(i) }, every
 // block checked against the signed head and the device's signature
-export async function openLog (dht, server, device) {
+//
+// pay(request) -> fields to add to a block request (a paid read's voucher)
+export async function openLog (dht, server, device, { pay = null, keyPair = null } = {}) {
   const key = hex(device)
-  const { conn, req } = await ask(dht, server)
+  const { conn, req } = await ask(dht, server, keyPair)
   const idx = await req({ op: 'index', device: key })
   if (failure(idx)) {
     conn.destroy()
@@ -328,7 +371,9 @@ export async function openLog (dht, server, device) {
     throw new Error('head: ' + why)
   }
   const block = async (i) => {
-    const data = await req({ op: 'block', device: key, index: i, length: head.length })
+    const body = { op: 'block', device: key, index: i, length: head.length }
+    if (pay) Object.assign(body, await pay(body))
+    const data = await req(body)
     if (failure(data)) return { index: i, ok: false, reason: failure(data) }
     const b = wire.decodeBlock(data)
     if (b.index !== i) return { index: i, ok: false, reason: 'another block' }
@@ -337,9 +382,19 @@ export async function openLog (dht, server, device) {
     const e = decodeEntry(Buffer.from(b.data))
     const m = senderOf(e.topic) === key ? open(Buffer.from(key, 'hex'), e.topic, e.message) : null
     if (!m) return { index: i, ok: false, reason: 'not signed by the device' }
-    return { index: i, ok: true, topic: e.topic, seq: m.seq, payload: m.payload }
+    return { index: i, ok: true, topic: e.topic, seq: m.seq, payload: m.payload, message: e.message }
   }
-  return { length: head.length, head, core: index.core, block, close: () => conn.destroy() }
+  // a message by sequence number (and topic, when given): the block, checked like any other, or null
+  const find = async (topic, seq) => {
+    const data = await req({ op: 'find', device: key, seq: String(seq) })
+    if (failure(data)) return null
+    let at
+    try { at = JSON.parse(data.toString()).index } catch { return null }
+    if (!(at < head.length)) return null // stored after the head we hold
+    const b = await block(at)
+    return b.ok && (!topic || b.topic === topic) && String(b.seq) === String(seq) ? b : null
+  }
+  return { length: head.length, head, core: index.core, block, find, close: () => conn.destroy() }
 }
 
 // asks for `samples` random blocks: a store that does not hold them cannot answer

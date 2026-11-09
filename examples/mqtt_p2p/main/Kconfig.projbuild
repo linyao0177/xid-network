@@ -8,6 +8,17 @@ config MQTT_P2P_NODE
         connects to one of the nodes announced there (packages/boat-mqtt-node).
         64 hex characters: that node only.
 
+config MQTT_P2P_VERIFIERS
+    string "Verify keys of the verifiers to trust for the node list"
+    default ""
+    help
+        Comma-separated verify keys (hex) of verifier nodes
+        (packages/boat-registry). When set, the device takes the staked
+        nodes a quorum of them lists (2 of 3) and connects only to those,
+        instead of looking up the network name; when a list names other
+        verifiers, it trusts those from then on (kept in NVS). Empty: look up
+        the network name.
+
 config MQTT_P2P_INTERVAL
     int "Seconds between telemetry messages"
     default 5
@@ -19,5 +30,27 @@ config MQTT_P2P_SIGN
         Each telemetry message carries the device's Ed25519 signature over the
         topic, a sequence number and the payload (hdht_mqtt_sign), so apps can
         check it whatever node or bridge it came through.
+
+config MQTT_P2P_METER
+    bool "Simulate a meter with a relay (pay-to-power demo)"
+    default n
+    help
+        Telemetry reports the energy delivered to a simulated load ("mwh"),
+        which only counts while the relay is on. The owner switches the relay.
+
+config MQTT_P2P_LOAD_W
+    int "Simulated load, in watts"
+    depends on MQTT_P2P_METER
+    default 1200
+
+config MQTT_P2P_OWNER
+    string "The owner's public key (hex): the only one who may switch the relay"
+    depends on MQTT_P2P_METER
+    default ""
+
+config MQTT_P2P_RELAY_GPIO
+    int "GPIO that drives the relay (-1: none)"
+    depends on MQTT_P2P_METER
+    default -1
 
 endmenu

@@ -3,12 +3,18 @@
 An ESP32 device on a network of MQTT nodes that anyone can run ([`packages/boat-mqtt-node`](../../packages/boat-mqtt-node)). The firmware uses ESP-IDF's esp-mqtt unchanged. [`components/hdht_mqtt`](../../components/hdht_mqtt) gives it a transport that looks the network up on HyperDHT and dials a node by public key.
 
 - **No broker address, password or certificate on the device.** The device knows only a network name (`CONFIG_MQTT_P2P_NODE`, default `boat-mqtt`) or a node's key. The node knows the device by the key it proved in the Noise handshake.
+- **Node list** (`CONFIG_MQTT_P2P_VERIFIERS`, comma-separated verify keys):
+    - Instead of looking up the network name, the device reads the records of the verifiers it trusts and connects only to the staked nodes a quorum of them lists. It reads them again every 10 minutes.
+    - When a list names other verifiers, it trusts those from then on (kept in NVS).
+    - It prints `NODELIST|epoch=… nodes=… votes=2/3`.
 - **Identity**: a seed kept in NVS. The public key is the MQTT client id, and only this device may publish under `d/<its key>/`.
 - **Telemetry**: `d/<key>/telemetry` every `CONFIG_MQTT_P2P_INTERVAL` seconds, QoS 1, from a task of its own.
 - **Signed** (`CONFIG_MQTT_P2P_SIGN`, on by default): each telemetry message carries the device's Ed25519 signature and a sequence number that rises across restarts, so an app checks it whatever node or bridge it came through. About 21 ms per message on the C3.
 - **Home record**: each time it connects, the device puts `{"v":1,"did":…,"mqtt":"<node key>"}` in its DHT record. A node that gets a subscription to `d/<device key>/…` reads it and bridges the device from there, and apps send it messages at that node (`watch.js --home`).
 - **Receipts**: the node it is on sends a signed receipt every 5 s for what it got. The device checks it in C, the signature and whether it covers what the device sent this boot, and prints `MQTT|receipt … covers N of the M we sent this boot`.
 - **Commands**: the device subscribes to `d/+/to/<key>/#`, where `+` is the sender's key (the node guarantees it), prints each message and acknowledges it to its sender on `d/<key>/to/<sender>/ack`.
+
+- **A meter** (`CONFIG_MQTT_P2P_METER`, off by default): a simulated load (`CONFIG_MQTT_P2P_LOAD_W`) behind a relay. Telemetry carries `"mwh"`, the energy delivered so far, which counts only while the relay is on. Only the owner (`CONFIG_MQTT_P2P_OWNER`, a public key) switches the relay, with `on` or `off` to `d/<owner>/to/<device>/relay`. Compute nodes bill the readings ([`packages/boat-registry`](../../packages/boat-registry#pay-to-power)).
 
 ## Run it
 

@@ -1,0 +1,15 @@
+version: "0.1.0"
+description: An ESP32 device on the BoAT network in a few calls - identity, staked nodes from the node list, signed and sealed messages, an inbox, receipts
+url: https://github.com/linyao0177/hyperdht-esp32/tree/main/components/boat_device
+repository: https://github.com/linyao0177/hyperdht-esp32.git
+license: MIT
+targets:
+  - esp32c3
+dependencies:
+  idf: ">=5.3"
+  espressif/libsodium: "^1.0.20"
+  tlay/hdht: "0.1.0"
+  tlay/hdht_mqtt: "0.1.0"
+files:
+  exclude:
+    - "test/**"
