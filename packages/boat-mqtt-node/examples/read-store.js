@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Reads a device's history from a store (or a mirror) and checks it: every
 // entry against the store's signed tree and the device's own signature, the
 // sequence numbers for gaps, and a spot check of random blocks.

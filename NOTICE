@@ -1,0 +1,13 @@
+xid network
+Copyright (c) 2026 Leo Lin. Licensed under the MIT License (see LICENSE).
+
+Used, not included:
+
+- hyperdht-esp32 (https://github.com/linyao0177/hyperdht-esp32), MIT License,
+  as the git submodule third_party/hyperdht-esp32; it includes libudx by
+  Holepunch under the Apache License 2.0 (see its NOTICE), and the packages
+  boat-peer (MIT) and boat-ota (Apache License 2.0) that the nodes use.
+- libsodium (https://libsodium.org), ISC License, via the espressif/libsodium
+  ESP-IDF component.
+- Node.js dependencies as listed in each package's package.json, under their
+  own licenses (hyperdht, hypercore, aedes, ethers and others).

@@ -30,6 +30,11 @@ const BAD_USER_OR_PASSWORD = 4
 // - Following (opts.follow, on by default): when a client subscribes to a
 //   device by key (d/<key>/...), and the device's record names another node
 //   as its home, this node bridges d/<key>/# from that node.
+// - opts.retainTtl(topic) -> ms (0: kept): retained messages on such topics
+//   are dropped after that long. Without it a broker that keeps retained
+//   messages on ever new topics (one per unit of work, say) grows without end.
+//   Retained payloads are copied, so they do not pin the network chunk they
+//   arrived in.
 // - opts.billing charges per message and takes EIP-3009 payments (billing.js).
 // - Receipts (receipts.js): the node signs what signed messages it got for
 //   each device, directly or through a bridge, every opts.receiptMs (5 s), to
@@ -38,6 +43,15 @@ export async function createNode (opts = {}) {
   const node = new BoatMqttNode(opts)
   await node.ready()
   return node
+}
+
+// a copy in a buffer of its own: Buffer.from would put a small one in the
+// shared 8 KB pool, and one copy kept for long keeps its whole slab alive
+// (a day's run grew 130 MB an hour that way)
+function own (b) {
+  const c = Buffer.allocUnsafeSlow(b.length)
+  b.copy(c)
+  return c
 }
 
 export class BoatMqttNode extends EventEmitter {
@@ -64,6 +78,42 @@ export class BoatMqttNode extends EventEmitter {
     this.receipts = opts.receipts === false ? null : new Receipts(this.keyPair)
     this.receiptMs = opts.receiptMs || 5000
     this._receiptTimer = null
+    this.retainTtl = opts.retainTtl || null
+    this._retainedAt = new Map() // topic -> when it was retained (topics with a TTL)
+    this._retainTimer = null
+  }
+
+  // retained messages: copied, and on topics with a TTL dropped after it
+  _wrapRetained () {
+    const p = this.broker.persistence
+    const store = p.storeRetained.bind(p)
+    p.storeRetained = (packet, cb) => {
+      const empty = !packet.payload || packet.payload.length === 0
+      if (!empty) packet = { ...packet, payload: own(packet.payload) }
+      const ttl = !empty && this.retainTtl ? this.retainTtl(packet.topic) : 0
+      if (ttl > 0) {
+        this._retainedAt.delete(packet.topic) // (in time order: the newest last)
+        this._retainedAt.set(packet.topic, Date.now() + ttl)
+      } else {
+        this._retainedAt.delete(packet.topic)
+      }
+      return store(packet, cb)
+    }
+    this._retainTimer = setInterval(() => this.expireRetained(), 30000)
+    this._retainTimer.unref()
+  }
+
+  expireRetained (now = Date.now()) {
+    let n = 0
+    for (const [topic, until] of this._retainedAt) {
+      if (until > now) continue
+      this._retainedAt.delete(topic)
+      // (the promise form, as Aedes calls it: with a callback the store waits
+      // for a 'ready' that Aedes 1.x never sends)
+      Promise.resolve(this.broker.persistence.storeRetained({ cmd: 'publish', topic, payload: Buffer.alloc(0), qos: 0, retain: true })).catch(() => {})
+      n++
+    }
+    return n
   }
 
   async ready () {
@@ -78,6 +128,11 @@ export class BoatMqttNode extends EventEmitter {
         if (node.follow && !client.bridge) node._follow(sub.topic)
         node._authorizeSubscribe ? node._authorizeSubscribe(client, sub, done) : done(null, sub)
       },
+      // a publish completes on the next turn: Aedes reads and parses the
+      // client's next packets from inside this callback, and when publishing
+      // completes synchronously a long backlog nests one call per packet (a
+      // day's run lost a node to "Maximum call stack size exceeded" here)
+      published (packet, client, done) { setImmediate(done) },
       authorizeForward (client, packet) {
         // a bridge carries what was published on its node, never what another
         // bridge brought in: no loops between nodes that bridge each other
@@ -85,6 +140,7 @@ export class BoatMqttNode extends EventEmitter {
         return packet
       }
     })
+    this._wrapRetained()
     this.broker.on('client', (c) => this.emit('client', describe(c)))
     this.broker.on('clientDisconnect', (c) => this.emit('clientDisconnect', describe(c)))
 
@@ -241,6 +297,7 @@ export class BoatMqttNode extends EventEmitter {
   async close () {
     clearInterval(this._timer)
     clearInterval(this._receiptTimer)
+    clearInterval(this._retainTimer)
     if (this.billing) this.billing.stop()
     for (const b of this.bridges) b.end(true)
     if (this.network !== null) await this.dht.unannounce(this.topic, this.keyPair).catch(() => {})

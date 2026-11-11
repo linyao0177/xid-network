@@ -1,0 +1,24 @@
+{
+  // iot.xid.network: static files (landing at /, thesis at /thesis/, docs at /docs/),
+  // served by Workers static assets. worker.js runs only for /media/* to answer byte
+  // ranges for the film, and for /api/* (api.js, the testnet's API). Deploys to the Cloudflare account that owns the xid.network
+  // zone (linyao01@gmail.com); see README.md.
+  "name": "xid-iot",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-23",
+  "assets": {
+    "directory": "dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/media/*", "/api/*"]
+  },
+  // the public testnet's API (api.js): snapshots and faucet/sponsor requests
+  "d1_databases": [
+    { "binding": "DB", "database_name": "xid-testnet", "database_id": "da3433b0-22e2-4af4-8889-c2a0ee186f00" }
+  ],
+  "routes": [
+    { "pattern": "iot.xid.network", "custom_domain": true }
+  ],
+  "workers_dev": false
+}

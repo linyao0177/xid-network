@@ -1,7 +1,7 @@
 // Tests for the registry contract on a fresh anvil chain: node test/run.js
 
-import { HDNodeWallet, Wallet, id, keccak256, toUtf8Bytes, ZeroHash, getBytes } from 'ethers'
-import { deploy, deployTestToken, register, signAnchor, signSlash, sortedSignatures, asBytes32, ROLES, postJob, workStatement, settledKey } from '../index.js'
+import { HDNodeWallet, Wallet, id, keccak256, toUtf8Bytes, ZeroHash, getBytes, ZeroAddress } from 'ethers'
+import { deploy, deployTestToken, register, batchStatement, slashStatementOf, signSlash, sortedSignatures, asBytes32, ROLES, postJob, workStatement, settledKey } from '../index.js'
 import { startChain, MNEMONIC } from './chain.js'
 
 let passed = 0
@@ -45,23 +45,24 @@ try {
   const again = await reverts(register(reg, v1, { dhtKey: key(1), roles: ROLES.VERIFY, stake: STAKE, token: tokenAddr }))
   check('nodes register with stake and roles; under the minimum or twice is refused', (await reg.verifierCount()) === 3n && await reg.isActive(store.address, ROLES.STORE) && !(await reg.isActive(store.address, ROLES.VERIFY)) && /minimum/.test(low) && /already/.test(again))
 
-  // anchors
-  const root = id('batch 1')
-  await (await reg.connect(v1).anchor(1, root, 50)).wait()
-  const byStore = await reverts(reg.connect(store).anchor(1, root, 50))
-  const twice = await reverts(reg.connect(v1).anchor(1, id('other'), 50))
-  check('a verifier anchors a batch root once; a store may not', (await reg.anchors(v1.address, 1)) === root && /not a verifier/.test(byStore) && /anchored/.test(twice))
+  // capacity: how many jobs a node takes (0: no limit)
+  await (await reg.connect(v1).setCapacity(40)).wait()
+  const capStranger = await reverts(reg.connect(stranger).setCapacity(5))
+  check('a node sets how many jobs it takes; an address that is not an active node may not', (await reg.nodes(v1.address)).capacity === 40n && /not active/.test(capStranger))
 
-  // equivocation: two statements for one batch, slashed by anyone
-  const sA = await signAnchor(reg, v3, 7, id('A'), 10)
-  const sB = await signAnchor(reg, v3, 7, id('B'), 10)
+  // a double batch: two statements for one batch of a job, slashed by anyone
+  const bctx = { registry: await reg.getAddress(), chainId: (await chain.provider.getNetwork()).chainId }
+  const claim = async (w, job, batch, root, units, forwarder = ZeroAddress) => ({ root, units, forwarder, sig: await w.signMessage(getBytes(batchStatement(bctx, job, batch, root, units, forwarder))) })
+  const cA = await claim(v3, 0, 7, id('A'), 10)
+  const cB = await claim(v3, 0, 7, id('B'), 10)
   const before = await token.balanceOf(reporter.address)
-  await (await reg.connect(reporter).slashEquivocation(v3.address, 7, id('A'), 10, sA, id('B'), 10, sB)).wait()
+  await (await reg.connect(reporter).slashDoubleBatch(v3.address, 0, 7, cA, cB)).wait()
   const n3 = await reg.nodes(v3.address)
   const reward = (await token.balanceOf(reporter.address)) - before
-  const dup = await reverts(reg.connect(reporter).slashEquivocation(v3.address, 7, id('A'), 10, sA, id('B'), 10, sB))
-  const same = await reverts(reg.connect(reporter).slashEquivocation(v1.address, 8, id('A'), 10, await signAnchor(reg, v1, 8, id('A'), 10), id('A'), 10, await signAnchor(reg, v1, 8, id('A'), 10)))
-  check('a verifier that signs two roots for one batch loses half its stake; the reporter gets half of that', n3.stake === STAKE / 2n && reward === STAKE / 4n && (await reg.treasury()) === STAKE / 4n && /already/.test(dup) && /same statement/.test(same))
+  const dup = await reverts(reg.connect(reporter).slashDoubleBatch(v3.address, 0, 7, cA, cB))
+  const cSame = await claim(v1, 0, 8, id('A'), 10)
+  const same = await reverts(reg.connect(reporter).slashDoubleBatch(v1.address, 0, 8, cSame, cSame))
+  check('a node that signs two statements for one batch of a job loses half its stake; the reporter gets half of that', n3.stake === STAKE / 2n && reward === STAKE / 4n && (await reg.treasury()) === STAKE / 4n && /already/.test(dup) && /same statement/.test(same))
   check('below the minimum stake it is no longer active, nor counted as a verifier', !n3.active && (await reg.verifierCount()) === 2n)
 
   // a judgement by the verifiers: the store failed its spot checks
@@ -102,7 +103,8 @@ try {
   const d = await reg.devices(did)
   const twiceClaim = await reverts(reg.connect(stranger).claimDevice(did, device.address, credential, forOther))
   check('a device is claimed with its credential and its consent to that owner', d.owner === owner.address && d.wallet === device.address && d.issuer === issuer.address && /consent/.test(wrongOwner) && /issuer/.test(fakeIssuer) && /already/.test(twiceClaim), await reg.claimText(did, owner.address).then((t) => t.slice(0, 40) + '…'))
-  check('the slashing statement covers this registry and chain only', (await reg.slashStatement(store.address, 1, ZeroHash, 1)) !== ZeroHash)
+  const sctx = { registry: await reg.getAddress(), chainId: 31337n }
+  check('the slashing statement covers this registry and chain only', slashStatementOf(sctx, store.address, 1n, ZeroHash, 1n) !== slashStatementOf({ ...sctx, chainId: 1n }, store.address, 1n, ZeroHash, 1n) && slashStatementOf(sctx, store.address, 1n, ZeroHash, 1n) !== slashStatementOf({ ...sctx, registry: ZeroAddress }, store.address, 1n, ZeroHash, 1n))
 
   // jobs, settlement and rewards
   const [c1, c2, payer] = [8, 9, 10].map(acct)

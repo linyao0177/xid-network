@@ -35,6 +35,7 @@ const MINUTES = Number(opt('minutes', 5))
 const KINDS = opt('jobs', 'verify,compute').split(',')
 const QUORUM = Number(opt('quorum', 2))
 const SPARE = Number(opt('spare', 1))
+const BATCH = Number(opt('batch', 0)) // units per batch (batch jobs); 0: unit by unit
 const IN_PROCESS = args.includes('--in-process')
 const EPOCH = 60
 // CPU seconds and RSS (MB) of processes, from ps: `time` is the CPU time
@@ -68,7 +69,7 @@ try {
   const admin = acct(0)
   const payer = acct(1)
   const token = await deployTestToken(admin)
-  const reg = await deploy(admin, { token: await token.getAddress(), minStake: 100_000000n, unbonding: 600, epochLength: EPOCH, jobNotice: 600 })
+  const reg = await deploy(admin, { token: await token.getAddress(), minStake: 100_000000n, unbonding: 600, epochLength: EPOCH, jobNotice: 600, plan: { spare: SPARE } })
   const registry = await reg.getAddress()
   const ops = Array.from({ length: N }, (_, i) => acct(2 + i))
   // anvil funds only its first accounts with gas: give the rest some
@@ -78,7 +79,7 @@ try {
   }
   log(`chain up; starting ${N} nodes${IN_PROCESS ? ' in this process' : ' as processes'}`)
   const t0 = Date.now()
-  const opts = { jobPollMs: 2000, listMs: 60000, settleDelayMs: 1000, backupMs: 4000, rewardMs: 30000, spare: SPARE, maxJobs: 100000 }
+  const opts = { jobPollMs: 2000, listMs: 60000, settleDelayMs: 1000, backupMs: 4000, rewardMs: 30000, maxJobs: 100000 }
   for (const [i, o] of ops.entries()) {
     const seed = Buffer.alloc(32, 0x10 + i)
     if (IN_PROCESS) {
@@ -125,7 +126,7 @@ try {
   const tj = Date.now()
   for (const m of meters) {
     for (const k of KINDS) {
-      const id = await postJob(reg, payer, { ...kinds[k], device: m.key, pay: 1_000000n, quorum: QUORUM, budget, perEpoch: 100000 })
+      const id = await postJob(reg, payer, { ...kinds[k], device: m.key, pay: 1_000000n, quorum: QUORUM, budget, perEpoch: 100000, batchUnits: BATCH })
       jobOf.set(id, m)
       kindOfJob.set(id, k)
     }
@@ -155,6 +156,14 @@ try {
     const last = Number((BigInt(unit) & 0xffffffffn) * BigInt(WINDOW) + BigInt(WINDOW - 1))
     const at = m.times.get(last)
     settled.push({ id: Number(id), unit: String(unit), ms: at ? Date.now() - at : null, block: ev.log.blockNumber })
+  })
+  // a batch settles `units` units at once; its latency runs from the batch's last reading
+  reg.on('BatchSettled', (id, batch, root, units, signers, pay, ev) => {
+    const m = jobOf.get(Number(id))
+    if (!m) return
+    const lastUnit = (BigInt(batch) & 0xffffffffn) * BigInt(BATCH) + BigInt(BATCH - 1)
+    const at = m.times.get(Number(lastUnit * BigInt(WINDOW) + BigInt(WINDOW - 1)))
+    for (let i = 0; i < Number(units); i++) settled.push({ id: Number(id), unit: String(batch) + ':' + i, ms: at ? Date.now() - at : null, block: ev.log.blockNumber, batch: true })
   })
   const cpu0 = process.cpuUsage()
   const start = Date.now()
@@ -203,6 +212,15 @@ try {
   const byKind = Object.fromEntries(KINDS.map((k) => [k, 0]))
   const onchain = await reg.queryFilter(reg.filters.Settled(), 0, 'latest')
   for (const e of onchain) if (kindOfJob.has(Number(e.args.id))) byKind[kindOfJob.get(Number(e.args.id))]++
+  const batches = await reg.queryFilter(reg.filters.BatchSettled(), 0, 'latest')
+  for (const e of batches) if (kindOfJob.has(Number(e.args.id))) byKind[kindOfJob.get(Number(e.args.id))] += Number(e.args.units)
+  // gas per unit in batches: each transaction's gas over the units it settled
+  const txs = [...new Set(batches.map((e) => e.transactionHash))].slice(0, 60)
+  for (const h of txs) {
+    const r = await chain.provider.getTransactionReceipt(h)
+    const units = batches.filter((e) => e.transactionHash === h).reduce((a, e) => a + Number(e.args.units), 0)
+    if (units) gas.push(Number(r.gasUsed) / units)
+  }
   // what the nodes' workers did, by kind (each node logs it every 15 s)
   const work = {}
   if (!IN_PROCESS) {
@@ -226,7 +244,8 @@ try {
     units_settled: settled.length,
     settled_share: expected ? +(settled.length / expected).toFixed(3) : null,
     settled_by_kind: Object.fromEntries(KINDS.map((k) => [k, +(byKind[k] / (expected / KINDS.length)).toFixed(3)])),
-    settled_onchain: onchain.length,
+    settled_onchain: onchain.length + batches.reduce((a, e) => a + Number(e.args.units), 0),
+    batches_settled: batches.length,
     work_by_kind: work,
     settles_per_s: +(settled.length / (elapsed + 15)).toFixed(2),
     gas_per_unit: gas.length ? Math.round(gas.reduce((a, b) => a + b, 0) / gas.length) : null,

@@ -10,27 +10,40 @@
     "artifacts",
     "contracts",
     "rules",
-    "bin"
+    "bin",
+    "examples/deploy.js",
+    "examples/fund.js",
+    "examples/meter.js",
+    "examples/post-jobs.js",
+    "deploy/install.sh",
+    "deploy/boat-node.service"
   ],
   "scripts": {
     "build": "node scripts-build.mjs",
-    "test": "node test/run.js && node test/v3.js && node test/verifier.js && node test/compute.js && node test/nodelist-c.js && node test/reads.js && node test/sealed-node.js && node test/node.js",
+    "test": "node test/run.js && node test/assign.js && node test/chainview.js && node test/settler.js && node test/batch.js && node test/v3.js && node test/verifier.js && node test/compute.js && node test/nodelist-c.js && node test/reads.js && node test/sealed-node.js && node test/node.js && node test/batch-node.js && node test/capacity-node.js",
     "build:rules": "node rules/build.mjs",
     "test:sol": "test -d sol-lib/forge-std || git clone -q --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std sol-lib/forge-std; forge test"
   },
   "license": "MIT",
   "dependencies": {
     "boat-mqtt-node": "file:../boat-mqtt-node",
-    "boat-peer": "file:../boat-peer",
+    "boat-peer": "file:../../third_party/hyperdht-esp32/packages/boat-peer",
     "ethers": "6.17.0",
     "https-proxy-agent": "7.0.6",
     "hyperdht": "6.36.0",
+    "secp256k1": "5.0.1",
     "sodium-universal": "5.0.1"
   },
   "devDependencies": {
     "wabt": "^1.0.39"
   },
   "bin": {
-    "boat-node": "bin/boat-node.js"
+    "boat-node": "bin/boat-node.js",
+    "boat-deploy": "examples/deploy.js",
+    "boat-fund": "examples/fund.js",
+    "boat-meter": "examples/meter.js",
+    "boat-post-jobs": "examples/post-jobs.js",
+    "boat-testnet-hub": "examples/testnet-hub.js",
+    "boat-sim": "examples/sim.js"
   }
 }

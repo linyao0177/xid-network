@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // An app on the network: prints what devices publish and can send one a
 // command, logged in with its own key (no password).
 //

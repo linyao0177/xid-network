@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Posts verify, store and compute (energy bill) jobs for one meter.
 //
 // usage: node examples/post-jobs.js --rpc <url> --registry 0x.. --key-file <payer>

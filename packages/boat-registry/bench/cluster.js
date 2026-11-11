@@ -3,12 +3,17 @@
 //   on the chain machine:  node bench/cluster.js coordinator --host <its internal IP>
 //                            [--nodes 24] [--devices 200] [--minutes 5] [--jobs verify,store,compute,forward]
 //                            [--interval 1000] [--window 5] [--dht-port 49737] [--json out.json]
+//                            [--batch 6] [--snapshots snap.jsonl] [--snapshot-min 60]
 //   on each node machine:  node bench/cluster.js nodes --coordinator http://<chain IP>:8600 --from 0 --count 8
+//                            [--dir <dir>] (reuse the nodes' storage: a restart mid-run, with new code)
 //
 // The coordinator runs a local chain (anvil, on all interfaces), a HyperDHT
 // bootstrap node and three DHT nodes for routing, deploys the registry, funds
 // the operators, serves /cluster.json, runs the meters, posts the jobs and
-// measures what settles. Node machines run boat-node processes (bin/
+// measures what settles (--batch: batch jobs, settled a batch of units at a
+// time; --snapshots: a line of JSON every --snapshot-min minutes, for long
+// runs: what settled in that time, latency, CPU, memory, disk, the chain).
+// Node machines run boat-node processes (bin/
 // boat-node.js, as an operator runs it) for their share of the operators,
 // and report CPU and memory to /stats every 15 s. Test keys only: anvil's
 // mnemonic and fixed seeds.
@@ -63,8 +68,12 @@ async function coordinator () {
   const INTERVAL = Number(opt('interval', 1000))
   const WINDOW = Number(opt('window', 5))
   const EPOCH = 60
+  const BATCH = Number(opt('batch', 0))
+  const SNAPSHOTS = opt('snapshots', null)
+  const SNAP_MIN = Number(opt('snapshot-min', 60))
 
-  const anvil = spawn('anvil', ['--host', '0.0.0.0', '--port', '8545', '--silent', '--mnemonic', MNEMONIC, '--accounts', '20'], { stdio: 'ignore' })
+  // (recent states only: a day of blocks would otherwise fill memory)
+  const anvil = spawn('anvil', ['--host', '0.0.0.0', '--port', '8545', '--silent', '--mnemonic', MNEMONIC, '--accounts', '20', '--prune-history', '2000'], { stdio: 'ignore' })
   const rpc = `http://${host}:8545`
   const provider = new JsonRpcProvider('http://127.0.0.1:8545', undefined, { pollingInterval: 500, cacheTimeout: -1 })
   for (let i = 0; i < 50; i++) {
@@ -140,43 +149,125 @@ async function coordinator () {
   const budget = 1_000000n * 100000n
   await (await token.mint(payer.address, budget * BigInt(D * KINDS.length))).wait()
   const jobOf = new Map()
-  for (const m of meters) for (const k of KINDS) jobOf.set(await postJob(reg, payer, { ...kinds[k], device: m.key, pay: 1_000000n, quorum: 2, budget, perEpoch: 100000 }), m)
+  const kindOf = new Map()
+  for (const m of meters) {
+    for (const k of KINDS) {
+      const id = await postJob(reg, payer, { ...kinds[k], device: m.key, pay: 1_000000n, quorum: 2, budget, perEpoch: 100000, batchUnits: BATCH })
+      jobOf.set(id, m)
+      kindOf.set(id, k)
+    }
+  }
   log(`${jobOf.size} jobs posted; giving nodes time to take them`)
   await sleep(Math.max(20000, jobOf.size * 40))
 
-  const settled = []
-  reg.on('Settled', (id, unit, result, signers, pay, ev) => {
+  // what settled: counts, by kind, and latencies (from the last reading of a
+  // unit, or of a batch's last unit, to the settlement), kept per snapshot
+  const settled = { units: 0, batches: 0, byKind: {}, lat: [], allLat: [], gas: 0n, txs: new Set() }
+  const record = (id, units, lastUnit, ev) => {
     const m = jobOf.get(Number(id))
     if (!m) return
-    const last = Number((BigInt(unit) & 0xffffffffn) * BigInt(WINDOW) + BigInt(WINDOW - 1))
+    settled.units += units
+    settled.byKind[kindOf.get(Number(id))] = (settled.byKind[kindOf.get(Number(id))] || 0) + units
+    const last = Number((BigInt(lastUnit) & 0xffffffffn) * BigInt(WINDOW) + BigInt(WINDOW - 1))
     const at = m.times.get(last)
-    settled.push({ id: Number(id), unit: String(unit), ms: at ? Date.now() - at : null, block: ev.log.blockNumber })
-  })
+    if (at) {
+      settled.lat.push(Date.now() - at)
+      if (settled.allLat.length < 200000) settled.allLat.push(Date.now() - at)
+    }
+    settled.txs.add(ev.log.transactionHash)
+  }
+  // read with getLogs every 2 s, not with a filter: anvil drops filters (a
+  // day's run lost its listener in the first minutes)
+  const topics = [[reg.interface.getEvent('Settled').topicHash, reg.interface.getEvent('BatchSettled').topicHash]]
+  let fromBlock = (await provider.getBlockNumber()) + 1
+  const pollSettled = async () => {
+    for (;;) {
+      try {
+        const head = await provider.getBlockNumber()
+        for (let f = fromBlock; f <= head; f += 2000) {
+          const to = Math.min(head, f + 1999)
+          for (const l of await provider.getLogs({ address: registry, fromBlock: f, toBlock: to, topics })) {
+            const e = reg.interface.parseLog(l)
+            if (!e) continue
+            if (e.name === 'Settled') record(e.args.id, 1, e.args.unit, { log: l })
+            else {
+              settled.batches++
+              const b = BigInt(e.args.batch)
+              record(e.args.id, Number(e.args.units), ((b >> 32n) << 32n) | ((b & 0xffffffffn) * BigInt(BATCH || 1) + BigInt((BATCH || 1) - 1)), { log: l })
+            }
+          }
+          fromBlock = to + 1
+        }
+      } catch (err) {
+        log('settled: ' + (err.shortMessage || err.message))
+      }
+      await sleep(2000)
+    }
+  }
+  pollSettled()
   const tick = () => {
     for (const m of meters) {
       const topic = own(m.key) + 'telemetry'
       m.mwh += 333
       const seq = m.seq++
       m.times.set(seq, Date.now())
+      m.times.delete(seq - 4 * 3600000 / INTERVAL) // (kept four hours)
       m.client.publish(topic, sign(m.keyPair.secretKey, topic, seq, JSON.stringify({ mwh: m.mwh })), { qos: 1 })
     }
   }
   const start = Date.now()
   const timer = setInterval(tick, INTERVAL)
   const cpuSamples = []
+  let snapCpu = []
+  let lastSnap = { at: start, units: 0, batches: 0, txs: 0 }
+  const pctOf = (xs, p) => { const a = [...xs].sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(a.length * p))] : null }
+  const snapshot = async () => {
+    const now = Date.now()
+    const machines = [...stats.values()].filter((x) => now - x.at < 60000)
+    const block = await provider.getBlockNumber().catch(() => null)
+    const anvilRss = (() => { try { return cpuOf([anvil.pid])[0].rss } catch { return null } })()
+    // units whose readings were all sent by now (a unit closes WINDOW readings in)
+    const complete = jobOf.size * Math.floor(meters[0].seq / WINDOW)
+    const snap = {
+      at: new Date(now).toISOString(),
+      hours: +((now - start) / 3600000).toFixed(2),
+      readings_per_device: meters[0].seq,
+      units_complete: complete,
+      units_settled: settled.units,
+      settled_share: complete ? +(settled.units / complete).toFixed(4) : null,
+      in_period: { minutes: Math.round((now - lastSnap.at) / 60000), units: settled.units - lastSnap.units, batches: settled.batches - lastSnap.batches, txs: settled.txs.size - lastSnap.txs, latency_ms: { p50: pctOf(settled.lat, 0.5), p90: pctOf(settled.lat, 0.9), p99: pctOf(settled.lat, 0.99) } },
+      by_kind: { ...settled.byKind },
+      node_cpu_pct: snapCpu.length ? { avg: Math.round(snapCpu.reduce((a, b) => a + b, 0) / snapCpu.length), max: Math.round(Math.max(...snapCpu)) } : null,
+      machines: machines.map((m) => ({ host: m.host, nodes: m.cpu.length, rss_mb_max: Math.round(Math.max(0, ...m.rss)), disk_used_pct: m.disk ?? null, mem_free_mb: m.memFree ?? null, nodes_alive: m.alive ?? null })),
+      chain: { block, anvil_rss_mb: anvilRss && Math.round(anvilRss) },
+      coordinator_rss_mb: Math.round(process.memoryUsage().rss / 1e6)
+    }
+    lastSnap = { at: now, units: settled.units, batches: settled.batches, txs: settled.txs.size }
+    settled.lat = []
+    snapCpu = []
+    if (SNAPSHOTS) fs.appendFileSync(SNAPSHOTS, JSON.stringify(snap) + '\n')
+    log(`snapshot: ${JSON.stringify(snap)}`)
+  }
+  let nextSnap = start + SNAP_MIN * 60000
   for (let s = 0; s < MINUTES * 60; s += 15) {
     await sleep(15000)
     const fresh = [...stats.values()].filter((x) => Date.now() - x.at < 30000)
     const cpus = fresh.flatMap((x) => x.cpu)
-    if (cpus.length) cpuSamples.push(...cpus)
-    log(`${Math.round((Date.now() - start) / 1000)} s: ${settled.length} units settled; ${fresh.length} node machines report ${cpus.length ? Math.round(cpus.reduce((a, b) => a + b, 0) / cpus.length) : '-'}% CPU per node`)
+    if (cpus.length) { cpuSamples.push(...cpus.map(Math.round)); snapCpu.push(...cpus) }
+    if (cpuSamples.length > 100000) cpuSamples.splice(0, cpuSamples.length - 100000)
+    log(`${Math.round((Date.now() - start) / 1000)} s: ${settled.units} units settled (${settled.batches} batches); ${fresh.length} node machines report ${cpus.length ? Math.round(cpus.reduce((a, b) => a + b, 0) / cpus.length) : '-'}% CPU per node`)
+    if (Date.now() >= nextSnap) {
+      nextSnap += SNAP_MIN * 60000
+      await snapshot().catch((err) => log('snapshot: ' + err.message))
+    }
   }
   clearInterval(timer)
   const elapsed = (Date.now() - start) / 1000
   await sleep(15000)
   done = true
 
-  const lat = settled.map((s) => s.ms).filter((x) => x !== null).sort((a, b) => a - b)
+  await snapshot().catch(() => {})
+  const lat = settled.allLat.sort((a, b) => a - b)
   const pct = (p) => (lat.length ? lat[Math.min(lat.length - 1, Math.floor(lat.length * p))] : null)
   const expected = jobOf.size * Math.floor(meters[0].seq / WINDOW)
   const machines = [...stats.values()]
@@ -188,10 +279,14 @@ async function coordinator () {
     kinds: KINDS,
     readings_per_s: Math.round((D * 1000) / INTERVAL),
     seconds: Math.round(elapsed),
+    batch_units: BATCH,
     units_complete: expected,
-    units_settled: settled.length,
-    settled_share: expected ? +(settled.length / expected).toFixed(3) : null,
-    settles_per_s: +(settled.length / (elapsed + 15)).toFixed(2),
+    units_settled: settled.units,
+    batches_settled: settled.batches,
+    settle_txs: settled.txs.size,
+    settled_share: expected ? +(settled.units / expected).toFixed(3) : null,
+    settles_per_s: +(settled.units / (elapsed + 15)).toFixed(2),
+    by_kind: settled.byKind,
     settle_latency_ms: { p50: pct(0.5), p90: pct(0.9), p99: pct(0.99) },
     node_cpu_pct_avg: cpuSamples.length ? Math.round(cpuSamples.reduce((a, b) => a + b, 0) / cpuSamples.length) : null,
     node_rss_mb_max: machines.length ? Math.round(Math.max(...machines.flatMap((m) => m.rss))) : null,
@@ -213,11 +308,18 @@ async function nodes () {
   while (!cluster) {
     try { cluster = await (await fetch(base + '/cluster.json')).json() } catch { await sleep(2000) }
   }
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'boat-cluster-'))
+  // (--dir: the storage of nodes restarted mid-run; their keys, what they
+  // signed and stored stay, as an operator's do across an upgrade)
+  const tmp = opt('dir') || fs.mkdtempSync(path.join(os.tmpdir(), 'boat-cluster-'))
   const procs = []
   for (const n of cluster.nodes.slice(from, from + count)) {
     const dir = path.join(tmp, 'n' + n.index)
     fs.mkdirSync(dir, { recursive: true })
+    if (fs.existsSync(path.join(dir, 'seed'))) {
+      const out = fs.openSync(path.join(dir, 'log'), 'a')
+      procs.push(spawn(process.execPath, [new URL('../bin/boat-node.js', import.meta.url).pathname, 'run', dir], { stdio: ['ignore', out, out], env: { ...process.env, BOAT_STATUS_MS: '15000' } }))
+      continue
+    }
     fs.writeFileSync(path.join(dir, 'seed'), n.seed, { mode: 0o600 })
     fs.writeFileSync(path.join(dir, 'operator.key'), n.key, { mode: 0o600 })
     fs.writeFileSync(path.join(dir, 'node.json'), JSON.stringify({ rpc: cluster.rpc, registry: cluster.registry, roles: ['forward', 'store', 'verify', 'compute'], autoRegister: true, network: 'boat-cluster', bootstrap: cluster.bootstrap, jobPollMs: 2000, listMs: 60000, settleDelayMs: 1000, backupMs: 4000, rewardMs: 30000, maxJobs: 100000 }))
@@ -225,10 +327,26 @@ async function nodes () {
     procs.push(spawn(process.execPath, [new URL('../bin/boat-node.js', import.meta.url).pathname, 'run', dir], { stdio: ['ignore', out, out], env: { ...process.env, BOAT_STATUS_MS: '15000' } }))
   }
   log(`${procs.length} nodes started (${from}..${from + count - 1})`)
+  // a node that exits is started again, as systemd would (Restart=always):
+  // counted in `restarts`, with its exit in its log
+  const mine = cluster.nodes.slice(from, from + count)
+  let restarts = 0
+  const respawn = () => {
+    for (let i = 0; i < procs.length; i++) {
+      if (procs[i].exitCode === null && procs[i].signalCode === null) continue
+      const dir = path.join(tmp, 'n' + mine[i].index)
+      const out = fs.openSync(path.join(dir, 'log'), 'a')
+      fs.writeSync(out, `${new Date().toISOString()} exited (${procs[i].exitCode ?? procs[i].signalCode}): started again\n`)
+      procs[i] = spawn(process.execPath, [new URL('../bin/boat-node.js', import.meta.url).pathname, 'run', dir], { stdio: ['ignore', out, out], env: { ...process.env, BOAT_STATUS_MS: '15000' } })
+      restarts++
+      log(`node ${mine[i].index} exited: started again`)
+    }
+  }
   const hostname = os.hostname()
   const lastCpu = new Map() // pid -> CPU seconds at the last sample
   for (;;) {
     await sleep(15000)
+    respawn()
     let cpu = []
     let rss = []
     try {
@@ -239,7 +357,10 @@ async function nodes () {
         rss.push(p.rss)
       }
     } catch {}
-    await fetch(base + '/stats', { method: 'POST', body: JSON.stringify({ host: hostname, cores: os.cpus().length, cpu, rss }) }).catch(() => {})
+    let disk = null
+    try { disk = Number(execFileSync('df', ['--output=pcent', tmp]).toString().split('\n')[1].trim().replace('%', '')) } catch {}
+    const alive = procs.filter((p) => p.exitCode === null).length
+    await fetch(base + '/stats', { method: 'POST', body: JSON.stringify({ host: hostname, cores: os.cpus().length, cpu, rss, disk, memFree: Math.round(os.freemem() / 1e6), alive, restarts }) }).catch(() => {})
     const d = await fetch(base + '/done').then((r) => r.text()).catch(() => 'no')
     if (d === 'yes') break
   }

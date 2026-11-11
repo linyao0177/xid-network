@@ -10,7 +10,7 @@
 // taking the treasury, a few nodes draining a job, an old read voucher
 // after a channel reopens, an old device request.
 
-import { HDNodeWallet, Wallet, id, getBytes, toUtf8Bytes, AbiCoder, keccak256 } from 'ethers'
+import { HDNodeWallet, Wallet, id, getBytes, toUtf8Bytes, AbiCoder, keccak256, ZeroAddress } from 'ethers'
 import {
   deploy, deployTestToken, register, signSlash, sortedSignatures, asBytes32, ROLES, postJob, forwardJob, storeJob, workStatement, settledKey,
   signGovern, jobRequestStatementOf, deployReads, readStatementOf, merkleRoot, storeLeaf
@@ -93,9 +93,9 @@ try {
 
   // ---- many units in one transaction ----
   const items = [
-    { id: js, unit: 5n, result: storeResult, sigs: await sigsOf([v1, v2], js, 5n, storeResult) }, // fine
-    { id: js, unit: 0n, result: storeResult, sigs: await sigsOf([v1, v2], js, 0n, storeResult) }, // settled already
-    { id: js, unit: 6n, result: storeResult, sigs: await sigsOf([v1], js, 6n, storeResult) } // no quorum
+    { id: js, unit: 5n, result: storeResult, forwarder: ZeroAddress, sigs: await sigsOf([v1, v2], js, 5n, storeResult) }, // fine
+    { id: js, unit: 0n, result: storeResult, forwarder: ZeroAddress, sigs: await sigsOf([v1, v2], js, 0n, storeResult) }, // settled already
+    { id: js, unit: 6n, result: storeResult, forwarder: ZeroAddress, sigs: await sigsOf([v1], js, 6n, storeResult) } // no quorum
   ]
   const n = await reg.settleMany.staticCall(items)
   const rb = await (await reg.settleMany(items)).wait()

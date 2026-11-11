@@ -28,6 +28,14 @@ interface IERC20 {
 //   unit (a window of the device's sequence numbers), and sign their result
 //   for each unit; a unit is settled when `quorum` active nodes signed the
 //   same result, and they share its pay.
+// - Batches: a job posted with postBatchJob settles a batch of its units at a
+//   time (units 0..b-1 of a boot, then b..2b-1, ...). The nodes that agree
+//   sign one statement over the batch's Merkle root of (unit, result) and how
+//   many units it holds; one settleBatch pays them all, so the chain does
+//   one write per batch instead of one per unit. The units' own signatures
+//   stay off-chain, as evidence for watchers and slashDoubleWork.
+// - Capacity: a node says how many jobs it takes (setCapacity, 0 for no
+//   limit), and nodes leave it out of new assignments once it has that many.
 // - Rewards: what a node earns in one epoch can be withdrawn after the next
 //   one has ended. Until then a slash takes it.
 // - Forwarding: a forward job pays the node a device's messages went
@@ -57,6 +65,7 @@ contract BoatRegistry {
         uint64 unbondAt;
         uint64 since; // registered at; a verifier counts towards a quorum one epoch later
         uint256 stake;
+        uint32 capacity; // jobs the node takes at most; 0: no limit (setCapacity)
     }
 
     struct Device {
@@ -78,6 +87,7 @@ contract BoatRegistry {
         uint32 perEpoch;  // units that may settle in one epoch (bounds what a few bad nodes can take)
         uint32 settledInEpoch;
         uint64 lastEpoch;
+        uint16 batchUnits; // 0: settled unit by unit; else in batches of this many units (postBatchJob)
     }
 
     struct Pool {
@@ -108,6 +118,16 @@ contract BoatRegistry {
     uint16 public immutable quorumBps;
     uint64 public immutable epochLength;
     uint64 public immutable jobNotice;
+    // paid to the treasury for every job posted, out of its budget, and not
+    // refunded: what it costs to make nodes take a job on (and so to fill
+    // their capacity with jobs nobody needs)
+    uint256 public immutable jobFee;
+    // how every node computes the assignment plan (lib/chain.js, lib/assign.js),
+    // the same for all: spare | step << 8 | lag << 40 (workers beyond a job's
+    // quorum; the plan is computed as of a block every `step` blocks, `lag`
+    // behind the head). A setting each node chose itself would let nodes
+    // disagree on who works on what
+    uint64 public immutable planParams;
     address public admin;
     uint256 public treasury;
 
@@ -115,7 +135,6 @@ contract BoatRegistry {
     address[] public operators; // everyone who ever registered
     address[] public verifiers;
     mapping(address => uint256) private verifierIndex; // index + 1
-    mapping(address => mapping(uint64 => bytes32)) public anchors; // node -> batch -> root
     mapping(bytes32 => bool) public slashUsed;
     mapping(address => bool) public issuers;
     mapping(bytes32 => Device) public devices; // DID key -> device
@@ -132,7 +151,6 @@ contract BoatRegistry {
     event NodeRegistered(address indexed operator, bytes32 dhtKey, uint8 roles, uint256 stake);
     event Unbonding(address indexed operator, uint64 unbondAt);
     event Withdrawn(address indexed operator, uint256 amount);
-    event Anchored(address indexed operator, uint64 indexed batch, bytes32 root, uint32 count);
     event Slashed(address indexed operator, uint256 amount, bytes32 reason, address reporter);
     event DeviceClaimed(bytes32 indexed did, address indexed owner, address wallet, address issuer);
     event JobPosted(uint256 indexed id, address indexed payer, bytes32 indexed device, uint8 role, bytes32 spec, uint256 pay, uint16 quorum, uint256 budget, bytes params);
@@ -145,8 +163,12 @@ contract BoatRegistry {
     event Undelegated(address indexed operator, address indexed delegator, uint256 amount, uint64 at);
     event DeviceFunded(bytes32 indexed did, uint256 amount);
     event Governed(uint8 kind, address target, uint256 value, uint64 nonce);
+    event CapacitySet(address indexed operator, uint32 capacity);
+    event BatchJob(uint256 indexed id, uint16 batchUnits);
+    event JobSpent(uint256 indexed id, uint256 left);
+    event BatchSettled(uint256 indexed id, uint64 indexed batch, bytes32 root, uint32 units, uint256 signers, uint256 pay);
 
-    constructor(IERC20 token_, uint256 minStake_, uint64 unbonding_, uint16 quorumBps_, uint64 epochLength_, uint64 jobNotice_) {
+    constructor(IERC20 token_, uint256 minStake_, uint64 unbonding_, uint16 quorumBps_, uint64 epochLength_, uint64 jobNotice_, uint256 jobFee_, uint64 planParams_) {
         require(epochLength_ > 0, "epoch");
         token = token_;
         minStake = minStake_;
@@ -154,6 +176,8 @@ contract BoatRegistry {
         quorumBps = quorumBps_;
         epochLength = epochLength_;
         jobNotice = jobNotice_;
+        jobFee = jobFee_;
+        planParams = planParams_;
         admin = msg.sender;
     }
 
@@ -165,10 +189,21 @@ contract BoatRegistry {
         require(roles != 0 && roles < 16, "roles");
         require(amount >= minStake, "stake below minimum");
         require(token.transferFrom(msg.sender, address(this), amount), "stake transfer");
-        nodes[msg.sender] = Node(dhtKey, roles, true, 0, uint64(block.timestamp), amount);
+        nodes[msg.sender] = Node(dhtKey, roles, true, 0, uint64(block.timestamp), amount, 0);
         operators.push(msg.sender);
         if (roles & VERIFY != 0) _addVerifier(msg.sender);
         emit NodeRegistered(msg.sender, dhtKey, roles, amount);
+    }
+
+    // how many jobs the node takes at most (0: no limit), for jobs posted from
+    // now on. Assignment is done off-chain by every node alike, from the
+    // events in order (lib/chain.js): a CapacitySet applies to the jobs posted
+    // after it, so a change, or several, never moves jobs already assigned
+    function setCapacity(uint32 capacity) external {
+        Node storage n = nodes[msg.sender];
+        require(n.active, "not active");
+        n.capacity = capacity;
+        emit CapacitySet(msg.sender, capacity);
     }
 
     function addStake(uint256 amount) external {
@@ -210,29 +245,21 @@ contract BoatRegistry {
         return n.active && n.stake >= minStake && n.roles & role != 0;
     }
 
-    // ---- anchors ------------------------------------------------------------
-
-    function anchor(uint64 batch, bytes32 root, uint32 count) external {
-        Node storage n = nodes[msg.sender];
-        require(n.active && n.roles & VERIFY != 0, "not a verifier");
-        require(anchors[msg.sender][batch] == bytes32(0), "batch anchored");
-        anchors[msg.sender][batch] = root;
-        emit Anchored(msg.sender, batch, root, count);
-    }
-
-    // what a verifier signs for each batch, off-chain as well as here
-    function anchorStatement(address operator, uint64 batch, bytes32 root, uint32 count) public view returns (bytes32) {
-        return keccak256(abi.encode("boat-anchor/1", address(this), block.chainid, operator, batch, root, count));
-    }
-
     // ---- slashing -------------------------------------------------------------
 
-    // two different statements signed for one batch
-    function slashEquivocation(address operator, uint64 batch, bytes32 rootA, uint32 countA, bytes calldata sigA, bytes32 rootB, uint32 countB, bytes calldata sigB) external {
-        require(rootA != rootB || countA != countB, "same statement");
-        require(_recover(_eip191(anchorStatement(operator, batch, rootA, countA)), sigA) == operator, "sigA");
-        require(_recover(_eip191(anchorStatement(operator, batch, rootB, countB)), sigB) == operator, "sigB");
-        bytes32 reason = keccak256(abi.encode("equivocation", batch));
+    // two different statements signed for one batch of a job
+    struct BatchClaim {
+        bytes32 root;
+        uint32 units;
+        address forwarder;
+        bytes sig;
+    }
+
+    function slashDoubleBatch(address operator, uint256 id, uint64 batch, BatchClaim calldata a, BatchClaim calldata b) external {
+        require(a.root != b.root || a.units != b.units || a.forwarder != b.forwarder, "same statement");
+        require(_recover(_eip191(_batchStatement(id, batch, a.root, a.units, a.forwarder)), a.sig) == operator, "sigA");
+        require(_recover(_eip191(_batchStatement(id, batch, b.root, b.units, b.forwarder)), b.sig) == operator, "sigB");
+        bytes32 reason = keccak256(abi.encode("double-batch", id, batch));
         require(!slashUsed[keccak256(abi.encode(operator, reason))], "already slashed");
         slashUsed[keccak256(abi.encode(operator, reason))] = true;
         _slash(operator, nodes[operator].stake / 2, reason);
@@ -249,13 +276,13 @@ contract BoatRegistry {
         _slash(operator, nodes[operator].stake / 2, reason);
     }
 
-    function slashStatement(address operator, uint256 amount, bytes32 reason, uint64 nonce) public view returns (bytes32) {
+    function _slashStatement(address operator, uint256 amount, bytes32 reason, uint64 nonce) internal view returns (bytes32) {
         return keccak256(abi.encode("boat-slash/1", address(this), block.chainid, operator, amount, reason, nonce));
     }
 
     // a judgement signed by a quorum of active verifiers (not the operator itself)
     function slash(address operator, uint256 amount, bytes32 reason, uint64 nonce, bytes[] calldata sigs) external {
-        bytes32 h = slashStatement(operator, amount, reason, nonce);
+        bytes32 h = _slashStatement(operator, amount, reason, nonce);
         require(!slashUsed[h], "already slashed");
         slashUsed[h] = true;
         _quorum(_eip191(h), sigs, operator);
@@ -337,25 +364,38 @@ contract BoatRegistry {
         id = _postJob(msg.sender, device, t, params);
     }
 
-    function _postJob(address payer, bytes32 device, JobTerms calldata t, bytes calldata params) internal returns (uint256 id) {
-        require(t.role == FORWARD || t.role == STORE || t.role == VERIFY || t.role == COMPUTE, "role");
-        require(t.quorum >= 1 && t.pay > 0 && t.perEpoch > 0, "terms");
-        id = jobs.length;
-        jobs.push(Job(payer, t.role, t.quorum, 0, uint64(block.number), device, t.spec, t.pay, t.budget, t.perEpoch, 0, 0));
-        emit JobPosted(id, payer, device, t.role, t.spec, t.pay, t.quorum, t.budget, params);
+    // the same, settled in batches of batchUnits units (settleBatch)
+    function postBatchJob(bytes32 device, JobTerms calldata t, uint16 batchUnits, bytes calldata params) external returns (uint256 id) {
+        require(batchUnits > 0 && t.perEpoch >= batchUnits && t.budget >= t.pay * batchUnits + jobFee, "batch");
+        require(token.transferFrom(msg.sender, address(this), t.budget), "budget transfer");
+        id = _postJob(msg.sender, device, t, params);
+        jobs[id].batchUnits = batchUnits;
+        emit BatchJob(id, batchUnits);
     }
 
-    // a unit of the job settles now: within its budget and its rate
-    function _spend(Job storage j) internal {
-        require(j.budget >= j.pay, "budget spent");
+    function _postJob(address payer, bytes32 device, JobTerms calldata t, bytes calldata params) internal returns (uint256 id) {
+        require(t.role == FORWARD || t.role == STORE || t.role == VERIFY || t.role == COMPUTE, "role");
+        require(t.quorum >= 1 && t.quorum <= 32 && t.pay > 0 && t.perEpoch > 0 && t.budget >= t.pay + jobFee, "terms");
+        id = jobs.length;
+        treasury += jobFee;
+        jobs.push(Job(payer, t.role, t.quorum, 0, uint64(block.number), device, t.spec, t.pay, t.budget - jobFee, t.perEpoch, 0, 0, 0));
+        emit JobPosted(id, payer, device, t.role, t.spec, t.pay, t.quorum, t.budget - jobFee, params);
+    }
+
+    // `units` units of the job settle now: within its budget and its rate
+    function _spend(uint256 id, Job storage j, uint256 units) internal {
+        require(j.budget >= j.pay * units, "budget spent");
         uint64 e = epoch();
         if (j.lastEpoch != e) {
             j.lastEpoch = e;
             j.settledInEpoch = 0;
         }
-        require(j.settledInEpoch < j.perEpoch, "rate");
-        j.settledInEpoch++;
-        j.budget -= j.pay;
+        require(j.settledInEpoch + units <= j.perEpoch, "rate");
+        j.settledInEpoch += uint32(units);
+        j.budget -= j.pay * units;
+        // the job takes no more units until it is funded again: nodes stop
+        // holding room for it (lib/chain.js follows this)
+        if (j.budget < j.pay * (j.batchUnits == 0 ? 1 : j.batchUnits)) emit JobSpent(id, j.budget);
     }
 
     // ---- devices pay for their own jobs ----------------------------------------
@@ -385,7 +425,7 @@ contract BoatRegistry {
     }
 
     // what a device signs to post a job paid from its balance (EIP-191 over this hash)
-    function jobRequestStatement(bytes32 did, JobTerms calldata t, bytes32 paramsHash, uint64 nonce) public view returns (bytes32) {
+    function _jobRequestStatement(bytes32 did, JobTerms calldata t, bytes32 paramsHash, uint64 nonce) internal view returns (bytes32) {
         return keccak256(abi.encode("boat-job/1", address(this), block.chainid, did, t, paramsHash, nonce));
     }
 
@@ -396,7 +436,7 @@ contract BoatRegistry {
         require(d.wallet != address(0), "unknown device");
         require(block.timestamp <= t.deadline, "request expired");
         uint64 nonce = deviceNonce[did];
-        require(_recover(_eip191(jobRequestStatement(did, t, keccak256(params), nonce)), sig) == d.wallet, "not signed by the device");
+        require(_recover(_eip191(_jobRequestStatement(did, t, keccak256(params), nonce)), sig) == d.wallet, "not signed by the device");
         require(deviceBalance[did] >= t.budget, "device balance");
         deviceNonce[did] = nonce + 1;
         deviceBalance[did] -= t.budget;
@@ -442,24 +482,15 @@ contract BoatRegistry {
     function settle(uint256 id, uint64 unit, bytes32 result, bytes[] calldata sigs) external {
         Job storage j = jobs[id];
         require(j.role != FORWARD, "forward jobs settle with settleForward");
+        require(j.batchUnits == 0, "settled in batches");
         require(j.closesAt == 0 || block.timestamp < j.closesAt, "job closed");
         require(result != bytes32(0), "result");
         bytes32 k = keccak256(abi.encode(id, unit));
         require(settled[k] == bytes32(0), "settled");
-        bytes32 digest = _eip191(workStatement(id, unit, result));
-        address[] memory paid = new address[](sigs.length);
-        uint256 n = 0;
-        address last = address(0);
-        for (uint256 i = 0; i < sigs.length; i++) {
-            address s = _recover(digest, sigs[i]);
-            require(s > last, "signers must be distinct and sorted");
-            last = s;
-            Node storage node = nodes[s];
-            if (node.active && node.stake >= minStake && node.roles & j.role != 0) paid[n++] = s;
-        }
+        (address[] memory paid, uint256 n, ) = _signers(_eip191(workStatement(id, unit, result)), sigs, j.role, address(0));
         require(n >= j.quorum, "no quorum");
         settled[k] = result;
-        _spend(j);
+        _spend(id, j, 1);
         uint256 share = j.pay / n;
         for (uint256 i = 0; i < n; i++) _credit(paid[i], share);
         treasury += j.pay - share * n;
@@ -472,6 +503,7 @@ contract BoatRegistry {
     function settleForward(uint256 id, uint64 unit, bytes32 root, address forwarder, bytes[] calldata sigs) external {
         Job storage j = jobs[id];
         require(j.role == FORWARD, "role");
+        require(j.batchUnits == 0, "settled in batches");
         require(j.closesAt == 0 || block.timestamp < j.closesAt, "job closed");
         require(root != bytes32(0), "result");
         bytes32 k = keccak256(abi.encode(id, unit));
@@ -479,36 +511,21 @@ contract BoatRegistry {
         Node storage f = nodes[forwarder];
         require(f.active && f.stake >= minStake && f.roles & FORWARD != 0, "forwarder");
         bytes32 result = keccak256(abi.encode(forwarder, root));
-        bytes32 digest = _eip191(workStatement(id, unit, result));
-        bool signed = false;
-        uint256 n = 0;
-        address last = address(0);
-        for (uint256 i = 0; i < sigs.length; i++) {
-            address s = _recover(digest, sigs[i]);
-            require(s > last, "signers must be distinct and sorted");
-            last = s;
-            if (s == forwarder) signed = true;
-            else if (_votes(s)) n++;
-        }
+        (, uint256 n, bool signed) = _signers(_eip191(workStatement(id, unit, result)), sigs, FORWARD, forwarder);
         require(signed, "not signed by the forwarder");
         require(n >= j.quorum, "no quorum");
         settled[k] = result;
-        _spend(j);
+        _spend(id, j, 1);
         _credit(forwarder, j.pay);
         emit Settled(id, unit, result, n + 1, j.pay);
     }
 
+    // a unit to settle in settleMany: forwarder != 0 makes it a forward job's
+    // unit (settleForward), whose `result` is the root of the messages
     struct SettleItem {
         uint256 id;
         uint64 unit;
         bytes32 result;
-        bytes[] sigs;
-    }
-
-    struct ForwardItem {
-        uint256 id;
-        uint64 unit;
-        bytes32 root;
         address forwarder;
         bytes[] sigs;
     }
@@ -517,13 +534,96 @@ contract BoatRegistry {
     // no quorum, over its rate) is skipped, not the batch. Returns how many settled.
     function settleMany(SettleItem[] calldata items) external returns (uint256 n) {
         for (uint256 i = 0; i < items.length; i++) {
-            try this.settle(items[i].id, items[i].unit, items[i].result, items[i].sigs) { n++; } catch {}
+            SettleItem calldata it = items[i];
+            if (it.forwarder == address(0)) {
+                try this.settle(it.id, it.unit, it.result, it.sigs) { n++; } catch {}
+            } else {
+                try this.settleForward(it.id, it.unit, it.result, it.forwarder, it.sigs) { n++; } catch {}
+            }
         }
     }
 
-    function settleForwardMany(ForwardItem[] calldata items) external returns (uint256 n) {
+    // the signers of digest (distinct, sorted by address) that count: for a
+    // forward job (role FORWARD), the voting verifiers other than the forwarder,
+    // and whether the forwarder signed; else the active nodes of the role
+    function _signers(bytes32 digest, bytes[] calldata sigs, uint8 role, address forwarder) internal view returns (address[] memory paid, uint256 n, bool forwarderSigned) {
+        paid = new address[](sigs.length);
+        address last = address(0);
+        for (uint256 i = 0; i < sigs.length; i++) {
+            address s = _recover(digest, sigs[i]);
+            require(s > last, "signers must be distinct and sorted");
+            last = s;
+            if (role == FORWARD) {
+                if (s == forwarder) forwarderSigned = true;
+                else if (_votes(s)) n++;
+            } else {
+                Node storage node = nodes[s];
+                if (node.active && node.stake >= minStake && node.roles & role != 0) paid[n++] = s;
+            }
+        }
+    }
+
+    // ---- batches ---------------------------------------------------------------------
+
+    // what the nodes sign for a batch of a job's units (EIP-191 over this hash):
+    // root = Merkle root of keccak256(abi.encode(unit, result)) over the batch's
+    // settled units, sorted by unit; units = how many; forwarder = the node paid
+    // for a forward job's batch (address(0) for other jobs)
+    function _batchStatement(uint256 id, uint64 batch, bytes32 root, uint32 units, address forwarder) internal view returns (bytes32) {
+        return keccak256(abi.encode("boat-batch/2", address(this), block.chainid, id, batch, root, units, forwarder));
+    }
+
+    function _batchKey(uint256 id, uint64 batch) internal pure returns (bytes32) {
+        return keccak256(abi.encode("batch", id, batch));
+    }
+
+    // a batch of a job settles once. batch = boot << 32 | index: the units
+    // index*batchUnits .. (index+1)*batchUnits - 1 of that boot. Store, verify and
+    // compute jobs: `quorum` active nodes of the role signed; they share the
+    // pay of `units` units. Forward jobs: the forwarder signed with `quorum`
+    // verifiers; the forwarder is paid.
+    function settleBatch(uint256 id, uint64 batch, bytes32 root, uint32 units, address forwarder, bytes[] calldata sigs) external {
+        Job storage j = jobs[id];
+        require(j.batchUnits != 0, "settled unit by unit");
+        require(j.closesAt == 0 || block.timestamp < j.closesAt, "job closed");
+        require(root != bytes32(0) && units > 0 && units <= j.batchUnits, "batch");
+        bool fwd = j.role == FORWARD;
+        require(fwd == (forwarder != address(0)), "forwarder");
+        bytes32 k = _batchKey(id, batch);
+        require(settled[k] == bytes32(0), "settled");
+        (address[] memory paid, uint256 n, bool forwarderSigned) = _signers(_eip191(_batchStatement(id, batch, root, units, forwarder)), sigs, j.role, forwarder);
+        require(n >= j.quorum, "no quorum");
+        settled[k] = root;
+        _spend(id, j, units);
+        uint256 total = j.pay * units;
+        if (fwd) {
+            require(forwarderSigned, "not signed by the forwarder");
+            Node storage f = nodes[forwarder];
+            require(f.active && f.stake >= minStake && f.roles & FORWARD != 0, "forwarder");
+            _credit(forwarder, total);
+            emit BatchSettled(id, batch, root, units, n + 1, total);
+            return;
+        }
+        uint256 share = total / n;
+        for (uint256 i = 0; i < n; i++) _credit(paid[i], share);
+        treasury += total - share * n;
+        emit BatchSettled(id, batch, root, units, n, total);
+    }
+
+    struct BatchItem {
+        uint256 id;
+        uint64 batch;
+        bytes32 root;
+        uint32 units;
+        address forwarder; // forward jobs; else address(0)
+        bytes[] sigs;
+    }
+
+    // many batches in one transaction; one that cannot settle is skipped
+    function settleBatchMany(BatchItem[] calldata items) external returns (uint256 n) {
         for (uint256 i = 0; i < items.length; i++) {
-            try this.settleForward(items[i].id, items[i].unit, items[i].root, items[i].forwarder, items[i].sigs) { n++; } catch {}
+            BatchItem calldata b = items[i];
+            try this.settleBatch(b.id, b.batch, b.root, b.units, b.forwarder, b.sigs) { n++; } catch {}
         }
     }
 
@@ -638,13 +738,13 @@ contract BoatRegistry {
         admin = address(0);
     }
 
-    function governStatement(uint8 kind, address target, uint256 value, uint64 nonce) public view returns (bytes32) {
+    function _governStatement(uint8 kind, address target, uint256 value, uint64 nonce) internal view returns (bytes32) {
         return keccak256(abi.encode("boat-govern/1", address(this), block.chainid, kind, target, value, nonce));
     }
 
     // a change signed by a quorum of the active verifiers
     function govern(uint8 kind, address target, uint256 value, uint64 nonce, bytes[] calldata sigs) external {
-        bytes32 h = governStatement(kind, target, value, nonce);
+        bytes32 h = _governStatement(kind, target, value, nonce);
         require(!governUsed[h], "used");
         governUsed[h] = true;
         _quorum(_eip191(h), sigs, address(0));

@@ -1,0 +1,82 @@
+{
+  "name": "xid testnet",
+  "network": "xid-testnet",
+  "chainId": 5042002,
+  "chain": "Arc testnet",
+  "rpc": "https://rpc.testnet.arc.network",
+  "explorer": "https://testnet.arcscan.app",
+  "gasFaucet": "https://faucet.circle.com",
+  "registry": "0x26Ae7fCe8FBB4cAcE6778eC00a4EfFe785D83329",
+  "reads": "0x2E55ed4486Dd0470b5b1cAD5615f3493C8B7D5da",
+  "token": "0xB274c18eb5ff5F06be97C8C6dFc9A70916f194E8",
+  "tokenSymbol": "TSUSD",
+  "tokenDecimals": 6,
+  "block": 71857354,
+  "minStake": "100000000",
+  "jobFee": "1000000",
+  "epochSeconds": 3600,
+  "verifiers": [
+    "6d8944da6b0bbed787413f1e9c8d1092d7bdfa87a297e8a2281c2625bafd109b",
+    "6ec76553c6b5202941d2bd3729a2ec31c623a03f2bac37633dc6b53e9fe7c600",
+    "9162923de40448c8aa2b406ee12652f60ce214d4d115239527973df3da45f48e",
+    "6fb5b23af0567b58832450be73f8094c8ef27513540aa81e926190159c5bd3ef"
+  ],
+  "nodes": [
+    {
+      "name": "xid-us",
+      "location": "Iowa, US",
+      "ip": "34.46.8.155",
+      "operator": "0x5A1745185e3e97350d1E3ae9763e236c841EeDD1",
+      "nodeKey": "d28e891d55ea532b9b88e57f283ea3aaa6ecaeffa77f7ac8842ad47be80b1f77",
+      "verifyKey": "6d8944da6b0bbed787413f1e9c8d1092d7bdfa87a297e8a2281c2625bafd109b",
+      "roles": [
+        "forward",
+        "store",
+        "verify",
+        "compute"
+      ]
+    },
+    {
+      "name": "xid-eu",
+      "location": "Belgium, EU",
+      "ip": "34.38.68.178",
+      "operator": "0x1810DDEdD4E7E1Cacc932304F14e3d2a8B03EE46",
+      "nodeKey": "0ddc9a97967985aa26db04aab112a802eea4a6bb6543f1f16fa576af20e66cd6",
+      "verifyKey": "6ec76553c6b5202941d2bd3729a2ec31c623a03f2bac37633dc6b53e9fe7c600",
+      "roles": [
+        "forward",
+        "store",
+        "verify",
+        "compute"
+      ]
+    },
+    {
+      "name": "xid-tw",
+      "location": "Taiwan",
+      "ip": "104.199.248.54",
+      "operator": "0xe76dcF547fC034eB445eEaDEFF9cE3038B9246dd",
+      "nodeKey": "8b30e3025f6db08fb68b157a7cb4d05742c2bafd4ad98fcc53b9404e46aba6c2",
+      "verifyKey": "9162923de40448c8aa2b406ee12652f60ce214d4d115239527973df3da45f48e",
+      "roles": [
+        "forward",
+        "store",
+        "verify",
+        "compute"
+      ]
+    },
+    {
+      "name": "xid-jp",
+      "location": "Tokyo, JP",
+      "ip": "34.146.24.234",
+      "operator": "0x166d1c84dFc83876653013A60D542238bF5b9CB0",
+      "nodeKey": "bca8774c3ea7a2126c263370cd600907d96b5fd10c7affda059295a88bf221c8",
+      "verifyKey": "6fb5b23af0567b58832450be73f8094c8ef27513540aa81e926190159c5bd3ef",
+      "roles": [
+        "forward",
+        "store",
+        "verify",
+        "compute"
+      ]
+    }
+  ]
+}

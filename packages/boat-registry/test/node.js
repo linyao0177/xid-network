@@ -50,7 +50,7 @@ try {
   const acct = (i) => HDNodeWallet.fromPhrase(MNEMONIC, undefined, `m/44'/60'/0'/0/${i}`).connect(chain.provider)
   const [admin, payer, ...ops] = [0, 1, 2, 3, 4, 5, 6, 7].map(acct)
   const token = await deployTestToken(admin)
-  const reg = await deploy(admin, { token: await token.getAddress(), minStake: MIN, unbonding: 600, epochLength: EPOCH, jobNotice: 10 })
+  const reg = await deploy(admin, { token: await token.getAddress(), minStake: MIN, unbonding: 600, epochLength: EPOCH, jobNotice: 10, plan: { spare: 10 } })
   for (const o of [payer, ...ops]) await (await token.mint(o.address, 1000_000000n)).wait()
   await (await token.mint(payer.address, 1000_000000n)).wait() // four jobs
   const registry = await reg.getAddress()
@@ -86,7 +86,6 @@ try {
       backupMs: 2500,
       rewardMs: 3000,
       metricsPort: i === 0 ? 0 : null, // any free port
-      spare: 10, // every node of a role works on every job here, the dishonest ones too
       spotEvery: 1, // every unit a store signs is spot-checked here
       drop: i === 1 ? (topic, payload) => payload.length > 10 && payload.readBigUInt64BE(2) % 7n === 3n : null, // N2 loses readings
       watchers: i === 1 || i === 2 ? 1 : 10, // N2 and N3 watch one job each: faults reach them over the fault mesh
@@ -130,8 +129,13 @@ try {
   const jc = await job(computeJob({ wasm, field: 'mwh', window: WINDOW, price: 250 }), 2)
   const jf = await job(forwardJob({ window: WINDOW }), 2)
   check('four jobs posted with their budgets', Number(await reg.jobCount()) === 4 && (await reg.jobs(jc)).budget === PAY * 100n)
-  await until(() => nodes.every((n) => n.jobs.size === (n.roles & ROLES.VERIFY ? 4 : [...n.jobs.values()].length)) && N4.workers.size === 2 && N6.workers.size === 1, 20000)
-  check('each node took the jobs of its roles; verifiers watch all four', N1.workers.size === 4 && N1.workers.get(jf).length === 2 && N4.workers.size === 2 && N5.workers.size === 2 && N6.workers.size === 1 && N5.jobs.size === 4)
+  await until(() => nodes.every((n) => n.jobs.size === (n.roles & ROLES.VERIFY ? 4 : [...n.jobs.values()].length)) && N4.workers.size === 2 && N5.workers.size === 2 && N6.workers.size === 1, 20000)
+  check('each node took the jobs of its roles; verifiers watch all four', N1.workers.size === 4 && N1.workers.get(jf).length === 2 && N4.workers.size === 2 && N5.workers.size === 2 && N6.workers.size === 1 && N5.jobs.size === 4, nodes.map((n) => n.workers.size + '/' + n.jobs.size).join(' '))
+  // the liars' workers: a node slashed below the minimum leaves its jobs (the
+  // plan follows the chain), so they are kept here
+  const liar4 = N4.workers.get(jc)[0]
+  const liar5 = N5.workers.get(jv)[0]
+  const liar6 = N6.workers.get(js)[0]
 
   // the store that drops what it stored
   const drop = setInterval(async () => {
@@ -163,23 +167,23 @@ try {
   const onChain = await Promise.all([...w1.keys()].map(async (u) => [u, await reg.settled(settledKey(jc, u))]))
   const settledBills = onChain.filter(([, r]) => r !== zero)
   check('the settled bill is what the honest nodes signed', settledBills.length > 0 && settledBills.every(([u, r]) => r === w1.get(u).result), `${settledBills.length} units`)
-  const ws = N5.workers.get(jv)[0].signed
+  const ws = liar5.signed
   check('the verifier that lied never got a unit settled for its result', ws.size > 0 && (await Promise.all([...ws.entries()].map(async ([k, w]) => (await reg.settled(settledKey(jv, k))) !== w.result))).every(Boolean))
 
   // the watchtowers: no one asked them to
   const s4 = await until(async () => {
     const ev = await reg.queryFilter(reg.filters.Slashed(ops[3].address))
-    return ev.find((e) => [...N4.workers.get(jc)[0].signed.keys()].some((k) => e.args.reason === faultReason('wrong-value', ops[3].address, jc, k)))
+    return ev.find((e) => [...liar4.signed.keys()].some((k) => e.args.reason === faultReason('wrong-value', ops[3].address, jc, k)))
   }, 40000)
   check('the bill that was not the rule\'s value is slashed by the watchtowers (wrong-value)', !!s4, s4 ? `${s4.args.amount} taken` : '')
   const s5 = await until(async () => {
     const ev = await reg.queryFilter(reg.filters.Slashed(ops[4].address))
-    return ev.find((e) => [...N5.workers.get(jv)[0].signed.keys()].some((k) => e.args.reason === faultReason('wrong-input', ops[4].address, jv, k)))
+    return ev.find((e) => [...liar5.signed.keys()].some((k) => e.args.reason === faultReason('wrong-input', ops[4].address, jv, k)))
   }, 40000)
   check('the verdict the device\'s own message contradicts is slashed (wrong-input)', !!s5)
   const s6 = await until(async () => {
     const ev = await reg.queryFilter(reg.filters.Slashed(ops[5].address))
-    return ev.find((e) => [...N6.workers.get(js)[0].signed.keys()].some((k) => e.args.reason === faultReason('store-failed', ops[5].address, js, k)))
+    return ev.find((e) => [...liar6.signed.keys()].some((k) => e.args.reason === faultReason('store-failed', ops[5].address, js, k)))
   }, 60000)
   check('the store that dropped what it signed fails its spot check and is slashed (store-failed)', !!s6, s6 ? `${s6.args.amount} taken, its unmatured rewards with it` : '')
   check('a slash also takes the rewards that had not matured', s6 && s6.args.amount > (MIN * 2000n) / 10000n && (await reg.rewards(ops[5].address)).pending === 0n)
@@ -239,7 +243,7 @@ try {
   const w3 = [...N3.workers.get(jc)[0].signed.values()].at(-1)
   const other = '0x' + '11'.repeat(32)
   const sig = await ops[2].signMessage(getBytes(workStatement({ registry, chainId: 31337n }, w3.job, BigInt(w3.unit), other)))
-  await N3.follower.publish(`d/${N3.ctx.nodeKey}/work/${w3.job}/${w3.unit}`, JSON.stringify({ ...w3, result: other, signature: sig }), { qos: 1, retain: true })
+  await N3.follower.publish(`d/${N3.ctx.nodeKey}/work/${w3.device}/${w3.job}/${w3.unit}`, JSON.stringify({ ...w3, result: other, signature: sig }), { qos: 1, retain: true })
   const dwReason = keccak256(AbiCoder.defaultAbiCoder().encode(['string', 'uint256', 'uint64'], ['double work', w3.job, BigInt(w3.unit)]))
   const sd = await until(async () => (await reg.queryFilter(reg.filters.Slashed(ops[2].address))).find((e) => e.args.reason === dwReason), 20000)
   check('two results signed for one unit are slashed at once (slashDoubleWork)', !!sd, sd ? `half the stake: ${sd.args.amount - 0n} with rewards` : '')

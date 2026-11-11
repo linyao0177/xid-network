@@ -1,0 +1,22 @@
+# docker build context: the repository root (packages/boat-registry/deploy/Dockerfile)
+**/node_modules
+**/build
+**/build-*
+**/managed_components
+.git
+dist
+site
+examples
+components
+tools
+sdkconfig*
+**/*.key
+**/seed
+packages/boat-registry/out
+packages/boat-registry/cache
+packages/boat-registry/sol-lib
+third_party/hyperdht-esp32/components
+third_party/hyperdht-esp32/examples
+third_party/hyperdht-esp32/research
+third_party/hyperdht-esp32/apps
+third_party/hyperdht-esp32/tools

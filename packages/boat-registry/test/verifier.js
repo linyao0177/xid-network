@@ -1,7 +1,7 @@
 // Verifier nodes on a HyperDHT testnet and an anvil chain: node test/verifier.js
 //
 // A device publishes good, forged, replayed and attested messages. Three
-// verifiers follow it, sign their verdicts in batches and anchor the roots.
+// verifiers follow it, sign their verdicts in batches and publish the signed roots.
 // One of them lies about the forged message; the other two audit its batch,
 // sign a judgement, and the registry slashes it.
 
@@ -74,11 +74,11 @@ try {
   const flags = batches[0].leaves.map((l) => l.verdict)
   check('verdicts: 5 good, a forged signature, a replay, an attested reading', flags.filter((f) => f === VERDICT.SIGNED_OK).length === 5 && flags.includes(VERDICT.SIGNED_BAD) && flags.includes(VERDICT.SIGNED_OK | VERDICT.REPLAY) && flags.includes(VERDICT.ATTESTED_OK), flags.join(','))
   const checks = await Promise.all(batches.map((b) => checkBatch(reg, b)))
-  check('each verifier signed and anchored its batch root; anyone can check it', checks.every((c) => c.ok), checks.map((c) => c.reason || 'ok').join(', '))
+  check('each verifier signed its batch root; anyone can check it', checks.every((c) => c.ok), checks.map((c) => c.reason || 'ok').join(', '))
   const v = verdictOf(batches[0], key, 2n, topic)
-  check('a message\'s verdict comes with a Merkle proof against the anchored root', v && v.ok && v.leaf.verdict === VERDICT.SIGNED_OK)
+  check('a message\'s verdict comes with a Merkle proof against the signed root', v && v.ok && v.leaf.verdict === VERDICT.SIGNED_OK)
   const changed = { ...batches[0], leaves: batches[0].leaves.map((l, i) => (i === 5 ? { ...l, verdict: VERDICT.SIGNED_OK } : l)) }
-  check('a batch changed after anchoring no longer checks out', !(await checkBatch(reg, changed)).ok)
+  check('a batch changed after signing no longer checks out', !(await checkBatch(reg, changed)).ok)
 
   // the liar is caught by audit and slashed by the other two
   const wrong1 = auditBatch(batches[2], vs[0].messages)

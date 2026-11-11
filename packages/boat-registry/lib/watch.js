@@ -17,14 +17,15 @@
 //                  whose turn it was
 //
 // A fault is published at d/<node>/faults/<reason> with the judge's signature
-// on the slash (BoatRegistry.slashStatement) and the evidence. Every other
+// on the slash (slashStatementOf, BoatRegistry._slashStatement) and the evidence. Every other
 // verifier that sees it judges it again from the evidence (or, for a store,
 // its own spot check) and adds its signature when it agrees. Once enough
 // verifiers signed (the contract's quorum), the one with the lowest address
 // submits slash(); the others do after a delay if it has not.
 
 import { EventEmitter } from 'events'
-import { AbiCoder, keccak256, getBytes, verifyMessage } from 'ethers'
+import { AbiCoder, keccak256, getBytes } from 'ethers'
+import { recoverSigner } from './recover.js'
 import { open, spotCheck } from 'boat-mqtt-node'
 import { ROLES, slashStatementOf, sortBySigner } from './registry.js'
 import { judgeMessage, VERDICT } from './verifier.js'
@@ -41,6 +42,12 @@ export const faultReason = (kind, operator, job, unit) =>
 // a store that answered and could not show what it signed for; one that
 // does not answer at all may only be offline, which is not judged here
 const refused = (r) => !r.ok && (!r.error || /^(store|head):/.test(r.error))
+
+function own (b) {
+  const c = Buffer.allocUnsafeSlow(b.length)
+  b.copy(c)
+  return c
+}
 
 export class Watchtower extends EventEmitter {
   // watchers: verifiers per device (the first by keccak(verifier, device))
@@ -81,8 +88,12 @@ export class Watchtower extends EventEmitter {
     if (!this.messages.has(device)) this.messages.set(device, new Map())
     const d = this.messages.get(device)
     const k = m.seq + ':' + topic
-    if (!d.has(k)) d.set(k, payload)
-    if (d.size > 5000) d.delete(d.keys().next().value)
+    // a copy of its own: the payload is a slice of the chunk it arrived in,
+    // and Buffer.from would put the copy in the shared 8 KB pool; either way
+    // one kept message keeps the whole chunk or slab alive (a day's run grew
+    // 250, then 130 MB an hour)
+    if (!d.has(k)) d.set(k, own(payload))
+    if (d.size > 1000) d.delete(d.keys().next().value)
   }
 
   // something another node published (work, faults)
@@ -283,7 +294,8 @@ export class Watchtower extends EventEmitter {
     if (!msg || !msg.reason || !msg.work || msg.judge === this.operator.address) return
     if (msg.reason !== faultReason(msg.kind, msg.operator, msg.work.job, msg.work.unit) || msg.amount !== String(this.amount)) return
     let judge
-    try { judge = verifyMessage(getBytes(slashStatementOf(this.ctx, msg.operator, BigInt(msg.amount), msg.reason, 0n)), msg.signature) } catch { return }
+    judge = recoverSigner(slashStatementOf(this.ctx, msg.operator, BigInt(msg.amount), msg.reason, 0n), msg.signature)
+    if (!judge) return
     if (judge !== msg.judge || judge === msg.operator) return
     let entry = this.faults.get(msg.reason)
     if (!entry) {

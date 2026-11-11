@@ -8,7 +8,8 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
 
-# WiFi via ESP-IDF's example helper; use your own connection code in a real product
+# Wi-Fi: components/boat_wifi (set over Improv). The example helper is here
+# only for a developer's default network (CONFIG_EXAMPLE_WIFI_*)
 CONFIG_EXAMPLE_CONNECT_WIFI=y
 CONFIG_EXAMPLE_CONNECT_IPV6=n
 CONFIG_EXAMPLE_PROVIDE_WIFI_CONSOLE_CMD=n
@@ -17,6 +18,7 @@ CONFIG_EXAMPLE_PROVIDE_WIFI_CONSOLE_CMD=n
 CONFIG_MQTT_TRANSPORT_SSL=n
 CONFIG_MQTT_TRANSPORT_WEBSOCKET=n
 
-# keep reconnecting to Wi-Fi however long the access point is gone
-# (the example helper gives up after 6 tries and stays offline)
-CONFIG_EXAMPLE_WIFI_CONN_MAX_RETRY=1000000000
+# The console (logs, and Improv for the Wi-Fi network) on the USB port of
+# boards with native USB. On a board whose USB goes to a USB-UART chip, use
+# CONFIG_ESP_CONSOLE_UART_DEFAULT instead: Improv follows the console.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

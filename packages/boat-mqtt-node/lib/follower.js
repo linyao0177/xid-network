@@ -2,7 +2,9 @@
 // publish: for nodes that work on device data without being in its path
 // (verifiers, compute nodes). Emits 'message' (device hex, topic, payload).
 // watch(filter) also takes what other clients of those nodes publish (other
-// nodes' work, say): 'peer' (sender hex, topic, payload).
+// nodes' work, say): 'peer' (sender hex, topic, payload), on every home node;
+// watchDevice(device, filter) does the same on one device's home node only,
+// and follows the device when it moves.
 
 import { EventEmitter } from 'events'
 import { connect } from './client.js'
@@ -22,6 +24,7 @@ export class Follower extends EventEmitter {
     this.watching = new Set()
     this.homes = new Map() // device hex -> home hex
     this.filters = new Map() // device hex -> filter
+    this.extra = new Map() // device hex -> Set of filters watched at its home (watchDevice)
     if (refreshMs) {
       this._timer = setInterval(() => this._refresh().catch(() => {}), refreshMs)
       this._timer.unref()
@@ -59,6 +62,7 @@ export class Follower extends EventEmitter {
     }
     const c = await this.clients.get(h)
     await c.subscribeAsync(`d/${key}/${filter}`, { qos: 1 })
+    for (const f of this.extra.get(key) || []) await c.subscribeAsync(f, { qos: 1 })
     this.homes.set(key, h)
     this.filters.set(key, filter)
     return h
@@ -72,6 +76,21 @@ export class Follower extends EventEmitter {
       const c = await p.catch(() => null)
       if (c) await c.subscribeAsync(filter, { qos: 1 })
     }
+  }
+
+  // subscribes to filter at the home node of one followed device (and again at
+  // its new home when it moves): what others publish about that device only,
+  // rather than about every device on every home node (watch)
+  async watchDevice (device, filter) {
+    const key = hex(device)
+    if (!this.extra.has(key)) this.extra.set(key, new Set())
+    const set = this.extra.get(key)
+    if (set.has(filter)) return
+    set.add(filter)
+    const h = this.homes.get(key)
+    const p = h && this.clients.get(h)
+    const c = p && (await p.catch(() => null))
+    if (c) await c.subscribeAsync(filter, { qos: 1 })
   }
 
   // publishes at one device's home node only: everyone who follows the

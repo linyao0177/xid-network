@@ -105,7 +105,7 @@ A device can seal its readings to its readers: the owner, and compute nodes by t
 
 ## The node list
 
-[`lib/nodelist.js`](lib/nodelist.js), and in C [`components/hdht_mqtt`](../../components/hdht_mqtt) (`nodelist.c`).
+[`lib/nodelist.js`](lib/nodelist.js), and in C [`hdht_mqtt`](https://github.com/linyao0177/hyperdht-esp32/tree/main/components/hdht_mqtt) (`nodelist.c`, in hyperdht-esp32).
 
 - **Publishing.** Every verifier puts a main record under its verify key: the verify keys of the 10 verifiers with the most stake, and the hashes of pages of forwarding nodes, most stake (own and delegated) first. Each page holds 28 nodes and is an immutable HyperDHT record stored under its own hash; there are up to 8 pages, 224 nodes. Verifiers that see the same registry put out the same bytes.
 - **Choosing.** A device that trusts a set of verify keys takes the main record that a quorum of them (2 of 3) put out byte for byte, newest epoch first. It then reads one page, chosen by its own key so that devices spread over the nodes, and checks it against the hash.

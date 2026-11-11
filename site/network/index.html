@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xid testnet</title>
+<meta name="description" content="Live state of the xid public testnet: nodes, devices, jobs and settlements on Arc testnet, with a faucet and device sponsorship.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%232f54ff' stroke-width='5'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%232f54ff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@700;800&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --bg: #ffffff; --side: #f6f7fb; --ink: #12152e; --mute: #5b5f78; --line: #e4e5ee;
+  --accent: #2f54ff; --accent-soft: rgba(47, 84, 255, 0.08); --good: #12805c; --bad: #c4332b;
+  --code-bg: #0f1226; --code-ink: #dfe3f5;
+  --display: "Unbounded", "Arial Black", Arial, sans-serif;
+  --body: "Manrope", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1124; --side: #12162d; --ink: #eceef8; --mute: #a3a8c6; --line: #252a49;
+    --accent: #7b93ff; --accent-soft: rgba(123, 147, 255, 0.12); --good: #4cc79a; --bad: #ff7a70; --code-bg: #080a18;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1124; --side: #12162d; --ink: #eceef8; --mute: #a3a8c6; --line: #252a49;
+  --accent: #7b93ff; --accent-soft: rgba(123, 147, 255, 0.12); --good: #4cc79a; --bad: #ff7a70; --code-bg: #080a18;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--body); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.bar { position: sticky; top: 0; z-index: 5; height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.brand { font: 800 18px var(--display); color: var(--ink); display: flex; align-items: center; gap: 10px; }
+.brand i { width: 18px; height: 18px; border-radius: 50%; border: 4px solid var(--accent); display: inline-block; }
+.brand span { color: var(--accent); }
+.bar nav { display: flex; gap: 20px; font-size: 14px; font-weight: 600; }
+.bar nav a { color: var(--mute); }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 32px 24px 80px; }
+h1 { font: 800 clamp(28px, 5vw, 40px)/1.15 var(--display); margin: 0 0 8px; letter-spacing: -0.01em; }
+h2 { font: 700 20px/1.3 var(--display); margin: 48px 0 14px; }
+.lede { color: var(--mute); margin: 0 0 6px; max-width: 760px; }
+.status { font-size: 14px; color: var(--mute); display: flex; gap: 8px; align-items: baseline; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mute); display: inline-block; flex: none; }
+.dot.on { background: var(--good); }
+.dot.off { background: var(--bad); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 24px; }
+.tile { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--side); }
+.tile b { display: block; font: 700 28px/1.2 var(--display); font-variant-numeric: tabular-nums; }
+.tile span { color: var(--mute); font-size: 13px; font-weight: 600; }
+.chart { border: 1px solid var(--line); border-radius: 12px; padding: 16px 16px 8px; }
+.chart svg { width: 100%; height: 160px; display: block; }
+.chart .axis { display: flex; justify-content: space-between; color: var(--mute); font-size: 12px; margin-top: 4px; }
+.table { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--mute); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--side); }
+tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; text-align: right; }
+th.num { text-align: right; }
+code, .mono { font-family: var(--mono); font-size: 13px; }
+.reading { max-width: 280px; overflow: hidden; text-overflow: ellipsis; color: var(--mute); }
+.empty { color: var(--mute); padding: 18px; }
+.join { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card { border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.card h3 { margin: 0; font: 700 16px var(--display); }
+.card p { margin: 0; color: var(--mute); font-size: 14px; }
+pre { margin: 0; background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 12px; overflow-x: auto; font: 12.5px/1.6 var(--mono); }
+form { display: flex; gap: 8px; flex-wrap: wrap; }
+input { flex: 1 1 220px; min-width: 0; font: 13px var(--mono); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+button { font: 700 14px var(--body); padding: 10px 16px; border-radius: 8px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+button:disabled { opacity: 0.6; cursor: default; }
+.msg { font-size: 13px; color: var(--mute); min-height: 1.2em; word-break: break-all; }
+.msg.ok { color: var(--good); }
+.msg.err { color: var(--bad); }
+.filter { margin: 0 0 10px; }
+.contracts { font-size: 14px; color: var(--mute); display: grid; gap: 4px; }
+footer { margin-top: 56px; color: var(--mute); font-size: 13px; }
+@media (max-width: 600px) {
+  .bar { padding: 0 16px; }
+  .bar nav { gap: 14px; }
+  .wrap { padding: 24px 16px 64px; }
+}
+</style>
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="/"><i></i>xid <span>testnet</span></a>
+  <nav aria-label="Site">
+    <a href="/">Overview</a>
+    <a href="/docs/">Docs</a>
+    <a href="https://github.com/linyao0177/xid-network" rel="noopener">GitHub</a>
+  </nav>
+</header>
+
+<main class="wrap">
+  <h1>Public testnet</h1>
+  <p class="lede">Nodes anyone can run, devices that sign what they send, and settlement on Arc testnet. Stake and job budgets are in TSUSD, a test token anyone can mint; only gas is Arc's testnet USDC.</p>
+  <div class="status" id="status"><span class="dot"></span><span>Loading…</span></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Units settled per hour</h2>
+  <div class="chart"><svg id="chart" viewBox="0 0 480 160" preserveAspectRatio="none" role="img" aria-label="Units settled per hour, last 48 hours"></svg><div class="axis"><span>48 h ago</span><span id="peak"></span><span>now</span></div></div>
+
+  <h2>Join</h2>
+  <div class="join">
+    <div class="card">
+      <h3>Flash a device</h3>
+      <p>An ESP32-C3 board, Chrome or Edge, two minutes: install from the <a href="/docs/#download">download page</a>. The firmware joins this testnet. Then paste the device key it prints (<code>BOAT|device …</code>) here, and the testnet pays nodes to verify and store its readings.</p>
+      <form id="sponsor"><input name="device" placeholder="device key (64 hex digits)" autocomplete="off" spellcheck="false" aria-label="Device key"><button>Sponsor</button></form>
+      <div class="msg" id="sponsor-msg"></div>
+    </div>
+    <div class="card">
+      <h3>Run a node</h3>
+      <p>A Linux machine with Node.js 20+ and UDP open outbound. The installer prints the operator address; get test tokens for it below, then start the service.</p>
+      <pre>curl -fsSL https://iot.xid.network/dl/node/install.sh | sudo sh -s -- \
+  https://iot.xid.network/dl/node/boat-registry-0.1.0.tgz --testnet --no-start</pre>
+      <form id="faucet"><input name="address" placeholder="operator address 0x…" autocomplete="off" spellcheck="false" aria-label="Operator address"><button>Get test tokens</button></form>
+      <div class="msg" id="faucet-msg"></div>
+    </div>
+    <div class="card">
+      <h3>No hardware</h3>
+      <p>Simulated devices that sign readings the way the firmware does. The testnet sponsors each one it starts.</p>
+      <pre>npm install -g https://iot.xid.network/dl/node/boat-registry-0.1.0.tgz
+boat-sim --testnet --devices 3</pre>
+      <p>Watch what your devices send: <code>boat-watch --network xid-testnet --filter 'd/+/telemetry'</code></p>
+    </div>
+  </div>
+
+  <h2>Nodes</h2>
+  <div class="table"><table><thead><tr><th>Node</th><th>Where</th><th>Online</th><th>Roles</th><th class="num">Stake</th><th class="num">Rewards</th><th class="num">Gas</th><th>Operator</th></tr></thead><tbody id="nodes"></tbody></table></div>
+
+  <h2>Devices</h2>
+  <div class="filter"><input id="devfilter" placeholder="find a device by key" autocomplete="off" spellcheck="false" aria-label="Find a device"></div>
+  <div class="table"><table><thead><tr><th>Device</th><th>Last seen</th><th class="num">Readings</th><th>Kind</th><th>Last reading</th><th>Jobs</th></tr></thead><tbody id="devices"></tbody></table></div>
+
+  <h2>Jobs</h2>
+  <div class="table"><table><thead><tr><th class="num">Job</th><th>Kind</th><th>Device</th><th class="num">Units</th><th class="num">Paid</th><th class="num">Left</th><th>State</th></tr></thead><tbody id="jobs"></tbody></table></div>
+
+  <h2>Contracts</h2>
+  <div class="contracts" id="contracts"></div>
+
+  <footer>Data from the testnet hub, pushed every 30 seconds. <a href="/testnet.json">testnet.json</a> has everything a node or device needs.</footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+const short = (h, n = 10) => h ? esc(h.slice(0, n)) + '…' : ''
+const num = (x, d = 0) => Number(x).toLocaleString('en-US', { maximumFractionDigits: d })
+const ago = (ms) => {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
+  return s < 60 ? s + ' s ago' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'
+}
+let data = null
+let explorer = 'https://testnet.arcscan.app'
+
+function render () {
+  const d = data
+  const fresh = Date.now() - d.at < 120000
+  $('status').innerHTML = `<span class="dot ${fresh ? 'on' : 'off'}"></span><span>${esc(d.testnet.chain)} · network <code>${esc(d.testnet.network)}</code> · block ${num(d.chain.block)} · updated ${ago(d.at)}</span>`
+  const t = d.totals
+  const online = d.nodes.filter((n) => n.online).length
+  const day = d.hours.slice(-24).reduce((a, h) => a + h.units, 0)
+  $('tiles').innerHTML = [
+    [`${online}/${d.nodes.filter((n) => n.public).length}`, 'public nodes online'],
+    [t.activeNodes, 'nodes staked'],
+    [t.devicesLive, 'devices live (10 min)'],
+    [num(day), 'units settled, 24 h'],
+    [num(t.unitsSettled), 'units settled, all'],
+    [num(t.settleTxs), 'settling transactions'],
+    [t.openJobs, 'open jobs']
+  ].map(([v, l]) => `<div class="tile"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('')
+
+  const max = Math.max(1, ...d.hours.map((h) => h.units))
+  const w = 480 / d.hours.length
+  $('chart').innerHTML = d.hours.map((h, i) => {
+    const bh = Math.max(h.units ? 2 : 0, (h.units / max) * 150)
+    return `<rect x="${(i * w + 1).toFixed(1)}" y="${(160 - bh).toFixed(1)}" width="${(w - 2).toFixed(1)}" height="${bh.toFixed(1)}" rx="1.5" fill="var(--accent)"><title>${new Date(h.hour * 1000).toISOString().slice(5, 13).replace('T', ' ')}:00 UTC: ${h.units} units, ${h.txs} transactions</title></rect>`
+  }).join('')
+  $('peak').textContent = `peak ${num(max)} units/h`
+
+  $('nodes').innerHTML = d.nodes.length ? d.nodes.sort((a, b) => (b.public - a.public) || String(a.name).localeCompare(String(b.name))).map((n) => `<tr>
+    <td>${n.name ? esc(n.name) : '<span class="mono">' + short(n.nodeKey) + '</span>'}</td>
+    <td>${esc(n.location || 'community')}</td>
+    <td>${n.online === null ? '<span class="dot"></span>' : `<span class="dot ${n.online ? 'on' : 'off'}"></span>`}</td>
+    <td>${esc(n.roles.join(', '))}</td>
+    <td class="num">${num(n.stake)}</td>
+    <td class="num">${num(n.rewards, 2)}</td>
+    <td class="num">${num(n.gas, 3)}</td>
+    <td><a class="mono" href="${explorer}/address/${esc(n.operator)}" rel="noopener">${short(n.operator, 12)}</a></td></tr>`).join('') : '<tr><td class="empty" colspan="8">No nodes yet.</td></tr>'
+
+  const q = $('devfilter').value.trim().toLowerCase()
+  const devs = d.devices.filter((x) => !q || x.key.includes(q))
+  $('devices').innerHTML = devs.length ? devs.slice(0, 50).map((x) => `<tr>
+    <td class="mono" title="${esc(x.key)}">${short(x.key, 16)}</td>
+    <td><span class="dot ${Date.now() - x.last < 600000 ? 'on' : ''}"></span> ${ago(x.last)}</td>
+    <td class="num">${num(x.count)}</td>
+    <td>${esc(x.kind)}</td>
+    <td class="reading mono">${x.kind === 'sealed' ? 'sealed for its readers' : esc(x.text)}</td>
+    <td>${x.jobs.length ? x.jobs.map((j) => '#' + j).join(' ') : '<span style="color:var(--mute)">none</span>'}</td></tr>`).join('') : `<tr><td class="empty" colspan="6">${q ? 'No device with that key has published lately.' : 'No devices yet.'}</td></tr>`
+
+  $('jobs').innerHTML = d.jobs.length ? d.jobs.slice(0, 40).map((j) => `<tr>
+    <td class="num">${j.id}</td><td>${esc(j.role)}</td><td class="mono">${short(j.device, 12)}</td>
+    <td class="num">${num(j.units)}</td><td class="num">${num(j.paid, 2)}</td><td class="num">${num(j.left ?? j.budget, 2)}</td>
+    <td>${j.closed ? 'closed' : j.spent ? 'out of budget' : 'open'}</td></tr>`).join('') : '<tr><td class="empty" colspan="7">No jobs yet.</td></tr>'
+
+  $('contracts').innerHTML = `<div>Registry <a class="mono" href="${explorer}/address/${esc(d.testnet.registry)}" rel="noopener">${esc(d.testnet.registry)}</a></div>
+    <div>TSUSD (test stake token, anyone mints) <a class="mono" href="${explorer}/address/${esc(d.testnet.token)}" rel="noopener">${esc(d.testnet.token)}</a></div>
+    <div>Faucet wallet <a class="mono" href="${explorer}/address/${esc(d.faucet.address)}" rel="noopener">${esc(d.faucet.address)}</a> (${num(d.faucet.gas, 2)} USDC for gas left). More gas: <a href="https://faucet.circle.com" rel="noopener">faucet.circle.com</a>, Arc testnet.</div>`
+}
+
+async function load () {
+  try {
+    const res = await fetch('/api/network', { cache: 'no-store' })
+    if (!res.ok) throw new Error(res.status)
+    data = await res.json()
+    if (data.testnet.explorer) explorer = data.testnet.explorer
+    render()
+  } catch (err) {
+    $('status').innerHTML = '<span class="dot off"></span><span>The hub has not reported yet. Try again in a minute.</span>'
+  }
+}
+$('devfilter').addEventListener('input', () => data && render())
+
+function wire (formId, path, field, msgId, done) {
+  const form = $(formId)
+  const msg = $(msgId)
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const btn = form.querySelector('button')
+    const value = form.elements[field].value.trim()
+    btn.disabled = true
+    msg.className = 'msg'
+    msg.textContent = 'Sending…'
+    try {
+      const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [field]: value }) })
+      const body = await res.json()
+      if (!res.ok || body.error) throw new Error(body.error || res.status)
+      msg.textContent = body.note ? `Request ${body.id}: ${body.note}.` : `Queued as request ${body.id}…`
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 4000))
+        const r = await (await fetch('/api/request/' + body.id, { cache: 'no-store' })).json()
+        if (r.state === 'done') { msg.className = 'msg ok'; msg.innerHTML = done(r.result); break }
+        if (r.state === 'failed') { msg.className = 'msg err'; msg.textContent = 'Failed: ' + (r.result?.error || 'unknown'); break }
+        msg.textContent = `Request ${body.id}: ${r.state}…`
+      }
+    } catch (err) {
+      msg.className = 'msg err'
+      msg.textContent = err.message
+    } finally {
+      btn.disabled = false
+    }
+  })
+}
+wire('sponsor', '/api/sponsor', 'device', 'sponsor-msg', (r) => `Sponsored: verify job #${esc(r.jobs.verify)} and store job #${esc(r.jobs.store)}, ${esc(r.units)} units each. It shows under Devices once it publishes.`)
+wire('faucet', '/api/faucet', 'address', 'faucet-msg', (r) => `Sent ${esc(r.gas)} USDC for gas and ${num(Number(r.token) / 1e6)} TSUSD. <a href="${explorer}/tx/${esc(r.txs[1])}" rel="noopener">Transaction</a>`)
+
+load()
+setInterval(load, 30000)
+</script>
+</body>
+</html>

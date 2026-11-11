@@ -11,6 +11,7 @@ const M = {
   usdPerGasToken: 1,         // USDC
   gasPerUnitSingle: 120800,  // settle(), 3 signers, measured on Arc
   gasPerUnitBatched: 95000,  // settleMany(), about 20 units a transaction, measured in bench/scale.js
+  gasPerBatch: 63135,        // settleBatchMany(), one batch of a job (3 signers), 20 batches a transaction, measured in test/batch.js; it barely depends on the units in the batch
   readingEverySec: 30,       // the meter in the soak
   readingsPerUnit: 20,       // job window
   jobsPerDevice: 4,          // verify, store, compute, forward
@@ -50,18 +51,17 @@ function scenario (name, { readingsPerUnit, gasPerUnit, settlesPerUnit = 1 }) {
   }
 }
 
-// settling every unit on chain, as now; bigger units; and a root per epoch
-// (each node submits one Merkle root of everything it signed in an hour and
-// claims pay against it: the gas per unit falls with the number of units)
-const unitsPerEpochPerNode = (readingsPerUnit) => M.assignmentsPerVmNode * unitsPerJobPerDay(readingsPerUnit) / 24
+// settling every unit on chain (v3); bigger units; and batch jobs (v4): the
+// nodes sign one statement per batch of a job's units, and one write on chain
+// pays the batch, so the gas per unit falls with the batch size
 const rows = [
   scenario('every unit settled, one by one (iteration 2)', { readingsPerUnit: 20, gasPerUnit: M.gasPerUnitSingle }),
-  scenario('every unit settled, in batches (now)', { readingsPerUnit: 20, gasPerUnit: M.gasPerUnitBatched }),
-  scenario('units of an hour (120 readings), in batches', { readingsPerUnit: 120, gasPerUnit: M.gasPerUnitBatched }),
-  scenario('units of a day (2,880 readings), in batches', { readingsPerUnit: 2880, gasPerUnit: M.gasPerUnitBatched }),
-  // a root and its claim: about 150,000 gas an hour per node, plus about
-  // 2,000 gas of claim proof per unit
-  scenario('every unit, settled as one root per node per hour', { readingsPerUnit: 20, gasPerUnit: 150000 / unitsPerEpochPerNode(20) + 2000 })
+  scenario('every unit settled, many in a transaction (v3)', { readingsPerUnit: 20, gasPerUnit: M.gasPerUnitBatched }),
+  scenario('units of an hour (120 readings), many in a transaction', { readingsPerUnit: 120, gasPerUnit: M.gasPerUnitBatched }),
+  scenario('units of a day (2,880 readings), many in a transaction', { readingsPerUnit: 2880, gasPerUnit: M.gasPerUnitBatched }),
+  // batch jobs (v4): units of 20 readings, settled 6 (an hour) or 24 (4 hours) at a time
+  scenario('every unit, in batches of 6 units (an hour)', { readingsPerUnit: 20, gasPerUnit: M.gasPerBatch / 6 }),
+  scenario('every unit, in batches of 24 units (4 hours)', { readingsPerUnit: 20, gasPerUnit: M.gasPerBatch / 24 })
 ]
 
 // a device's 4 jobs each take 3 signers; a small node holds assignmentsPerVmNode of them

@@ -1,10 +1,17 @@
 menu "BoAT device"
 
+config BOAT_NETWORK
+    string "Network name to look up nodes by when there is no node list"
+    default ""
+    help
+        Empty: "boat-mqtt". Release builds use "xid-testnet" (tools/release/sdkconfig.testnet).
+
 config BOAT_VERIFIERS
     string "Verify keys of the verifiers to trust for the node list (comma-separated hex)"
     default ""
     help
-        Empty: the device looks up the network name "boat-mqtt" instead.
+        Empty: the device looks up BOAT_NETWORK instead. Release builds trust the
+        public testnet's verifiers (tools/release/sdkconfig.testnet).
 
 config BOAT_READERS
     string "Ed25519 keys that may read sealed readings (comma-separated hex)"

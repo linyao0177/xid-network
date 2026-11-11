@@ -1,0 +1,14 @@
+{
+  "name": "xid-site",
+  "private": true,
+  "description": "iot.xid.network: the landing page, the thesis and the docs",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "deploy": "node build.mjs && wrangler deploy"
+  },
+  "devDependencies": {
+    "marked": "12.0.2",
+    "wrangler": "4.156.0"
+  }
+}

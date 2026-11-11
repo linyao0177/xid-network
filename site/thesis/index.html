@@ -1,0 +1,356 @@
+<title>The xid thesis</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;800&family=Manrope:wght@400;500;600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap">
+<style>
+/* Layout: a long essay in seven numbered parts, read top to bottom. Night bands open and
+   close it and carry the principles; the essay itself runs in a narrow column on paper,
+   with full-width exhibits (a timeline of trust, three converging lines, a road ahead).
+   Same brand as the landing page; a serif carries the essay's voice. */
+:root {
+  --paper: #fafaf7;
+  --ink: #0d1026;
+  --mute: #5b5f78;
+  --line: #e3e3ea;
+  --accent: #2f54ff;
+  --accent-soft: rgba(47, 84, 255, 0.10);
+  --gold: #c99a2e;
+  --night: #0d1026;
+  --night-2: #151a3a;
+  --on-night: #f4f4f8;
+  --on-night-mute: #a9adc6;
+  --sky: #8ea3ff;
+  --display: "Unbounded", "Arial Black", Arial, sans-serif;
+  --body: "Manrope", "Helvetica Neue", Arial, sans-serif;
+  --essay: "Newsreader", Georgia, "Times New Roman", serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #10132b; --ink: #eef0f8; --mute: #a5a9c4; --line: #262b4e;
+    --accent: #7b93ff; --accent-soft: rgba(123, 147, 255, 0.14); --gold: #e2b85a;
+    --night: #070918; --night-2: #12163a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #10132b; --ink: #eef0f8; --mute: #a5a9c4; --line: #262b4e;
+  --accent: #7b93ff; --accent-soft: rgba(123, 147, 255, 0.14); --gold: #e2b85a;
+  --night: #070918; --night-2: #12163a; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--paper); color: var(--ink); font-family: var(--body); -webkit-font-smoothing: antialiased; }
+a { color: inherit; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+.col { max-width: 700px; margin: 0 auto; }
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+p { margin: 0; }
+.night { background: var(--night); color: var(--on-night); }
+
+/* top bar */
+.top .wrap { display: flex; justify-content: space-between; align-items: center; padding-block: 22px; gap: 16px; }
+.logo { font-family: var(--display); font-weight: 800; font-size: 24px; text-decoration: none; letter-spacing: -0.04em; display: flex; align-items: center; gap: 10px; color: var(--on-night); }
+.logo i { width: 22px; height: 22px; border-radius: 50%; border: 3px solid var(--sky); position: relative; display: inline-block; }
+.logo i::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--sky); }
+.top nav { display: flex; gap: 26px; font-weight: 600; font-size: 15px; }
+.top nav a { text-decoration: none; color: var(--on-night-mute); }
+.top nav a:hover, .top nav a[aria-current] { color: var(--on-night); }
+
+/* opening */
+.open { position: relative; overflow: hidden; }
+.open svg.rings { position: absolute; right: -180px; top: -120px; width: 820px; max-width: none; opacity: 0.55; pointer-events: none; }
+.open .wrap { position: relative; padding-block: 96px 120px; }
+.kicker { font-weight: 800; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--sky); }
+.open h1 { font-family: var(--display); font-weight: 800; font-size: clamp(42px, 7.6vw, 104px); line-height: 0.98; letter-spacing: -0.03em; margin-top: 22px; max-width: 12ch; }
+.open .lede { font-family: var(--essay); font-size: clamp(21px, 2.2vw, 28px); line-height: 1.45; color: var(--on-night-mute); max-width: 36ch; margin-top: 30px; }
+.toc { display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 56px; font-size: 14px; color: var(--on-night-mute); }
+.toc a { text-decoration: none; display: flex; gap: 8px; }
+.toc a b { color: var(--sky); font-weight: 800; }
+.toc a:hover { color: var(--on-night); }
+
+/* essay */
+.part { padding-block: 110px 0; }
+.part-head { display: grid; gap: 14px; margin-bottom: 34px; }
+.numeral { font-family: var(--display); font-weight: 700; font-size: 15px; color: var(--accent); letter-spacing: 0.06em; }
+.part h2 { font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw, 50px); line-height: 1.06; letter-spacing: -0.02em; }
+.essay p { font-family: var(--essay); font-size: clamp(19px, 1.5vw, 22px); line-height: 1.62; margin-bottom: 22px; }
+.essay p em { font-style: italic; }
+.essay p strong { font-family: var(--body); font-weight: 800; font-size: 0.86em; letter-spacing: 0.01em; }
+.essay .dropcap::first-letter { font-family: var(--display); font-weight: 800; float: left; font-size: 3.4em; line-height: 0.9; padding: 6px 12px 0 0; color: var(--accent); }
+.pull { font-family: var(--display); font-weight: 700; font-size: clamp(26px, 3.4vw, 42px); line-height: 1.15; letter-spacing: -0.02em; margin: 60px auto; max-width: 20ch; text-align: center; }
+.pull span { color: var(--accent); }
+.aside { border-left: 3px solid var(--accent); padding: 4px 0 4px 20px; margin: 34px 0; font-family: var(--body); font-size: 16px; line-height: 1.65; color: var(--mute); }
+.aside b { color: var(--ink); }
+
+/* exhibit: the timeline of trust */
+.exhibit { margin-top: 56px; }
+.exhibit .cap { font-size: 13px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); margin-bottom: 18px; }
+.eras { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-top: 2px solid var(--ink); }
+.era { padding: 18px 16px 6px 0; display: grid; gap: 8px; align-content: start; position: relative; }
+.era::before { content: ""; position: absolute; top: -8px; left: 0; width: 14px; height: 14px; border-radius: 50%; background: var(--paper); border: 2px solid var(--ink); }
+.era .yr { font-family: var(--display); font-weight: 800; font-size: 26px; letter-spacing: -0.02em; }
+.era h3 { font-size: 16px; font-weight: 800; }
+.era p { font-size: 14.5px; line-height: 1.5; color: var(--mute); }
+.era.now::before { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 6px var(--accent-soft); }
+.era.now .yr, .era.now h3 { color: var(--accent); }
+@media (max-width: 960px) {
+  .eras { grid-template-columns: 1fr; border-top: 0; border-left: 2px solid var(--ink); margin-left: 7px; }
+  .era { padding: 0 0 26px 26px; }
+  .era::before { top: 6px; left: -8px; }
+}
+
+/* exhibit: three lines converge */
+.converge { border-radius: 26px; background: var(--accent-soft); padding: 22px; }
+.converge svg { width: 100%; height: auto; display: block; }
+.shifts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 26px; }
+.shift { display: grid; gap: 8px; align-content: start; }
+.shift b { font-family: var(--display); font-weight: 700; font-size: 18px; }
+.shift p { font-size: 15.5px; color: var(--mute); line-height: 1.55; }
+@media (max-width: 860px) { .shifts { grid-template-columns: 1fr; } }
+
+/* principles (night band) */
+.principles { padding-block: 110px; margin-top: 110px; }
+.principles .numeral { color: var(--sky); }
+.principles h2 { font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw, 50px); line-height: 1.06; letter-spacing: -0.02em; max-width: 16ch; }
+.laws { margin-top: 56px; display: grid; gap: 0; border-top: 1px solid rgba(255,255,255,0.14); }
+.law { display: grid; grid-template-columns: 90px minmax(0, 1fr) minmax(0, 1.1fr); gap: 28px; padding: 30px 0; border-bottom: 1px solid rgba(255,255,255,0.14); align-items: baseline; }
+.law .n { font-family: var(--display); font-weight: 800; font-size: 40px; color: rgba(255,255,255,0.18); }
+.law h3 { font-family: var(--display); font-weight: 700; font-size: clamp(22px, 2.6vw, 32px); line-height: 1.1; color: #fff; }
+.law p { color: var(--on-night-mute); font-size: 16.5px; line-height: 1.6; }
+@media (max-width: 860px) { .law { grid-template-columns: 1fr; gap: 10px; } .law .n { font-size: 28px; } }
+
+/* possibilities */
+.worlds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 14px; }
+.world { border: 1.5px solid var(--line); border-radius: 24px; padding: 28px 26px; display: grid; gap: 12px; align-content: start; }
+.world .tag { font-size: 12px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+.world h3 { font-family: var(--display); font-weight: 700; font-size: 21px; line-height: 1.2; }
+.world p { font-family: var(--essay); font-size: 18px; line-height: 1.55; color: var(--mute); }
+@media (max-width: 760px) { .worlds { grid-template-columns: 1fr; } }
+
+/* road ahead */
+.road { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 14px; }
+.stage { border-radius: 22px; padding: 24px 22px 26px; display: grid; gap: 10px; align-content: start; background: var(--accent-soft); }
+.stage.done { background: var(--ink); color: var(--paper); }
+.stage .st { justify-self: start; font-size: 12px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; padding: 5px 10px; border-radius: 999px; background: var(--paper); color: var(--ink); }
+.stage.done .st { background: var(--accent); color: #fff; }
+.stage h3 { font-family: var(--display); font-weight: 700; font-size: 19px; }
+.stage p { font-size: 15px; line-height: 1.55; opacity: 0.85; }
+@media (max-width: 960px) { .road { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) { .road { grid-template-columns: 1fr; } }
+
+/* close */
+.close { padding-block: 130px 70px; margin-top: 120px; text-align: center; }
+.close h2 { font-family: var(--display); font-weight: 800; font-size: clamp(34px, 5.4vw, 74px); line-height: 1.02; letter-spacing: -0.03em; max-width: 16ch; margin: 0 auto; }
+.close h2 span { color: var(--sky); }
+.close p { font-family: var(--essay); font-size: 22px; color: var(--on-night-mute); max-width: 40ch; margin: 28px auto 0; line-height: 1.5; }
+.cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 40px; }
+.btn { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 700; font-size: 16px; padding: 15px 24px; border-radius: 999px; background: #fff; color: #0d1026; border: 2px solid #fff; transition: transform .2s; }
+.btn:hover { transform: translateY(-2px); }
+.btn.line { background: transparent; color: #fff; border-color: rgba(255,255,255,0.5); }
+.sign { margin-top: 90px; padding-top: 24px; border-top: 1px solid rgba(255,255,255,0.12); font-size: 14px; color: var(--on-night-mute); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; text-align: left; }
+
+/* reading progress */
+.progress { position: fixed; top: env(safe-area-inset-top, 0px); left: 0; height: 3px; width: 100%; transform-origin: 0 50%; transform: scaleX(0); background: var(--accent); z-index: 10; }
+@media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
+</style>
+
+<div class="progress" id="progress" aria-hidden="true"></div>
+
+<div class="night">
+  <header class="top">
+    <div class="wrap">
+      <a class="logo" href="https://claude.ai/artifact/4rr2BAA3RL1dSj6jmCTdxn" target="_blank" rel="noopener" aria-label="xid network home"><i></i>xid</a>
+      <nav aria-label="Main">
+        <a href="https://claude.ai/artifact/4rr2BAA3RL1dSj6jmCTdxn" target="_blank" rel="noopener">Overview</a>
+        <a href="#top" aria-current="page">Thesis</a>
+        <a href="https://claude.ai/artifact/Ks9DyraptN84Vk68gqApZK" target="_blank" rel="noopener">Docs</a>
+      </nav>
+    </div>
+  </header>
+  <section class="open" id="top" aria-labelledby="thesis-title">
+    <svg class="rings" viewBox="0 0 820 820" aria-hidden="true">
+      <g fill="none" stroke="#8ea3ff">
+        <circle cx="410" cy="410" r="400" stroke-width="1" opacity="0.25"/>
+        <circle cx="410" cy="410" r="330" stroke-width="1" opacity="0.3" stroke-dasharray="3 9"/>
+        <circle cx="410" cy="410" r="260" stroke-width="1.5" opacity="0.35"/>
+        <circle cx="410" cy="410" r="190" stroke-width="1" opacity="0.4" stroke-dasharray="2 6"/>
+        <circle cx="410" cy="410" r="120" stroke-width="10" opacity="0.5"/>
+      </g>
+      <circle cx="410" cy="410" r="52" fill="#8ea3ff" opacity="0.55"/>
+      <g fill="#8ea3ff"><circle cx="410" cy="10" r="5"/><circle cx="764" cy="246" r="4"/><circle cx="700" cy="640" r="5"/><circle cx="150" cy="700" r="4"/><circle cx="80" cy="260" r="5"/><circle cx="410" cy="150" r="4"/><circle cx="640" cy="410" r="4"/><circle cx="230" cy="560" r="4"/></g>
+    </svg>
+    <div class="wrap">
+      <span class="kicker">The xid thesis</span>
+      <h1 id="thesis-title">Every machine will become a witness.</h1>
+      <p class="lede">Meters, sensors and machines already decide who gets billed, who gets paid and what gets believed. This is our case for how their word becomes something the whole economy can rely on.</p>
+      <nav class="toc" aria-label="Parts of the thesis">
+        <a href="#witnesses"><b>I</b>The witnesses</a>
+        <a href="#weak-link"><b>II</b>The weak link</a>
+        <a href="#trust"><b>III</b>Trust is infrastructure</a>
+        <a href="#now"><b>IV</b>Why now</a>
+        <a href="#principles"><b>V</b>Five principles</a>
+        <a href="#possible"><b>VI</b>What becomes possible</a>
+        <a href="#outlive"><b>VII</b>A network that outlives us</a>
+      </nav>
+    </div>
+  </section>
+</div>
+
+<main>
+  <section class="part" id="witnesses" aria-labelledby="h-witnesses">
+    <div class="wrap"><div class="col">
+      <div class="part-head"><span class="numeral">I</span><h2 id="h-witnesses">The witnesses</h2></div>
+      <div class="essay">
+        <p class="dropcap">Somewhere right now a meter is counting the kilowatt-hours a rooftop sends to the grid. A probe in a shipping container is logging four degrees. A pump is recording how much water it lifted, a charger how much energy it sold, a sensor on a street corner how much soot is in the air.</p>
+        <p>None of these machines thinks of itself as a witness. But that is what they have become. Their readings settle invoices, trigger insurance claims, back carbon credits, decide whether a shipment is accepted and whether a subsidy is paid. More and more of the economy's ledgers are written by machines, and more and more money moves on what they say.</p>
+        <p>We think this is the start of something much larger. As devices get cheaper and connections get easier, machine testimony will become the default record of what happened in the physical world. The question is whether anyone will be able to <em>believe</em> it.</p>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="part" id="weak-link" aria-labelledby="h-weak">
+    <div class="wrap"><div class="col">
+      <div class="part-head"><span class="numeral">II</span><h2 id="h-weak">The weak link is in the middle.</h2></div>
+      <div class="essay">
+        <p>Follow a reading from the sensor to the payment and you find the same thing almost every time: a server that nobody else can inspect. The device reports to a platform. The platform stores the number, shows it on a dashboard and sends it to whoever pays. Everyone downstream takes the platform's word for what the device said.</p>
+        <p>That arrangement has three costs we have learned to live with. <strong>It can be wrong without anyone knowing.</strong> A number can be changed, lost or withheld between the device and the bill. <strong>It is a single point of failure.</strong> When the platform goes down, every device behind it goes quiet. <strong>It is an island.</strong> Each vendor's devices speak only to that vendor's cloud, so data that should be shared stays locked inside the company that collected it.</p>
+        <p>We accepted all this because there was no other way that was cheap enough. Checking machine data independently meant expensive hardware, special networks and a lot of people. So we trusted the middle, and the middle grew.</p>
+      </div>
+    </div></div>
+    <p class="pull">The question is no longer whether machines can talk. It is whether we can <span>hold them to their word.</span></p>
+  </section>
+
+  <section class="part" id="trust" aria-labelledby="h-trust">
+    <div class="wrap">
+      <div class="col">
+        <div class="part-head"><span class="numeral">III</span><h2 id="h-trust">Trust has always been infrastructure.</h2></div>
+        <div class="essay">
+          <p>Whenever a society found a way to make trust cheap, a new economy grew on top of it. Merchants who could check each other's books could lend to strangers. Ports that agreed on one box could ship anything anywhere. Computers that agreed on one protocol became the internet, and an internet that could encrypt became a place to shop. A ledger that nobody controlled made it possible to send money without a bank in between.</p>
+          <p>Each of these did the same thing. It took a question that used to need a trusted middleman (<em>is this record true?</em>) and answered it with a rule that anyone could check. We believe machine data is next.</p>
+        </div>
+      </div>
+      <div class="exhibit" aria-label="A timeline of technologies that made trust cheap">
+        <div class="cap">Cheap trust, and what grew on it</div>
+        <div class="eras">
+          <div class="era"><span class="yr">1494</span><h3>Double-entry books</h3><p>Pacioli prints the method. Anyone can audit a merchant; credit follows.</p></div>
+          <div class="era"><span class="yr">1956</span><h3>The container</h3><p>One standard box. Ships, trains and trucks trust the same unit; global trade follows.</p></div>
+          <div class="era"><span class="yr">1983</span><h3>TCP/IP</h3><p>One protocol for every network. Machines trust the same rules; the internet follows.</p></div>
+          <div class="era"><span class="yr">1995</span><h3>SSL</h3><p>Encryption in the browser. Strangers trust a checkout page; online commerce follows.</p></div>
+          <div class="era"><span class="yr">2009</span><h3>Bitcoin</h3><p>A ledger nobody owns. People trust a rule instead of a bank; digital money follows.</p></div>
+          <div class="era now"><span class="yr">Now</span><h3>Machine testimony</h3><p>Devices that sign and nodes that check. Anyone can trust a reading; a machine economy follows.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="part" id="now" aria-labelledby="h-now">
+    <div class="wrap">
+      <div class="col">
+        <div class="part-head"><span class="numeral">IV</span><h2 id="h-now">Why now: three lines finally meet.</h2></div>
+        <div class="essay">
+          <p>An open network for machine data was not possible ten years ago. It needed three things to become cheap at the same time, and each of them has.</p>
+        </div>
+      </div>
+      <div class="exhibit converge">
+        <svg viewBox="0 0 1000 300" role="img" aria-label="Three lines (chips that sign, networks without servers, money machines can hold) converge on one point labelled xid network">
+          <g fill="none" stroke-width="4" stroke-linecap="round">
+            <path d="M20 50 C 380 50, 520 150, 760 150" stroke="var(--accent)" opacity="0.9"/>
+            <path d="M20 150 C 380 150, 520 150, 760 150" stroke="var(--accent)" opacity="0.6"/>
+            <path d="M20 250 C 380 250, 520 150, 760 150" stroke="var(--accent)" opacity="0.35"/>
+          </g>
+          <g font-family="Manrope, sans-serif" font-weight="800" font-size="17" fill="var(--ink)">
+            <text x="24" y="36">Chips that sign</text>
+            <text x="24" y="136">Networks without servers</text>
+            <text x="24" y="236">Money machines can hold</text>
+          </g>
+          <circle cx="840" cy="150" r="78" fill="none" stroke="var(--accent)" stroke-width="10"/>
+          <circle cx="840" cy="150" r="96" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="3 7"/>
+          <circle cx="840" cy="150" r="34" fill="var(--accent)"/>
+          <text x="840" y="270" text-anchor="middle" font-family="Unbounded, sans-serif" font-weight="700" font-size="18" fill="var(--ink)">xid network</text>
+        </svg>
+        <div class="shifts">
+          <div class="shift"><b>Chips that sign</b><p>A microcontroller that costs a few dollars can now hold its own key and sign every reading. On an ESP32-C3 it takes 21 milliseconds. Proof of origin no longer needs special hardware.</p></div>
+          <div class="shift"><b>Networks without servers</b><p>Peer-to-peer networking can reach a device behind any home router or mobile network, with no public address and no cloud in between. A device can find the network on its own.</p></div>
+          <div class="shift"><b>Money machines can hold</b><p>Stablecoins on programmable chains can pay for a single unit of work, automatically, to whoever did it, anywhere. A network can pay its operators per result instead of per contract.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="night principles" id="principles" aria-labelledby="h-principles">
+    <div class="wrap">
+      <span class="numeral">V</span>
+      <h2 id="h-principles" style="margin-top:14px">Five principles for machines we can believe.</h2>
+      <div class="laws">
+        <div class="law"><span class="n">1</span><h3>Sign at the source.</h3><p>A reading is born with its device's signature and a sequence number that only rises. From then on, nobody can change it, replay it or claim the device said something else.</p></div>
+        <div class="law"><span class="n">2</span><h3>Check by many.</h3><p>Every piece of work is done by several independent nodes and watched by others. No single operator's word is ever enough on its own.</p></div>
+        <div class="law"><span class="n">3</span><h3>Pay on agreement.</h3><p>A smart contract pays for a result only when enough nodes signed the same one. Agreement is the product; it is also the only thing anyone gets paid for.</p></div>
+        <div class="law"><span class="n">4</span><h3>Make lying expensive.</h3><p>Every operator puts up a stake. Sign a false result and the others recompute it, prove it and take part of that stake. Honesty becomes the profitable strategy.</p></div>
+        <div class="law"><span class="n">5</span><h3>Own nothing in the middle.</h3><p>Anyone can run a node, devices find nodes by themselves, and the contract's admin can hand control to its verifiers. There is no company that has to stay in business for the network to work.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="part" id="possible" aria-labelledby="h-possible">
+    <div class="wrap">
+      <div class="col">
+        <div class="part-head"><span class="numeral">VI</span><h2 id="h-possible">What becomes possible.</h2></div>
+        <div class="essay">
+          <p>When a machine's word can be checked by anyone, the paperwork around it starts to disappear. The reading becomes the invoice, the evidence and the trigger at once. Here is what we think that opens up.</p>
+        </div>
+      </div>
+      <div class="worlds">
+        <article class="world"><span class="tag">Energy</span><h3>Your roof sells to your neighbour.</h3><p>The meter's signed readings are the invoice. Independent nodes agree on the bill and the power stays on while it is paid. We have run exactly this on a microcontroller, end to end.</p></article>
+        <article class="world"><span class="tag">Cold chain</span><h3>The box proves the vaccine never warmed.</h3><p>A temperature probe signs every reading on the journey. The buyer, the carrier and the insurer read the same record, and nobody has to take anyone's word for it.</p></article>
+        <article class="world"><span class="tag">Climate</span><h3>Evidence that was never self-reported.</h3><p>A project's emissions data comes signed by the devices that measured it and checked by strangers with stake on the line, instead of a spreadsheet sent by the project itself.</p></article>
+        <article class="world"><span class="tag">Machines for hire</span><h3>A machine bills by the hour, by itself.</h3><p>A compressor, a charger or a drill rents out its time. The bill is computed from its signed usage and two of three independent nodes must agree on it before anyone pays.</p></article>
+      </div>
+      <div class="col">
+        <div class="aside"><b>What a signature cannot do.</b> It proves which device spoke and that nobody changed its words. It cannot prove the sensor measured honestly. That is why xid starts identity at the factory, where a manufacturer vouches for each device, and why the most valuable data will come from many devices that can be checked against each other.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="part" id="outlive" aria-labelledby="h-outlive">
+    <div class="wrap">
+      <div class="col">
+        <div class="part-head"><span class="numeral">VII</span><h2 id="h-outlive">A network that outlives its makers.</h2></div>
+        <div class="essay">
+          <p>Infrastructure people trust has to be neutral, and it has to last longer than any one company. That includes us. So xid network is designed to need us less over time: open code, nodes anyone can run, operators paid by the work itself, and a contract whose admin key can be given up so that verifiers govern it instead.</p>
+          <p>We are not there yet, and we would rather say so plainly. Here is the road as we see it.</p>
+        </div>
+      </div>
+      <div class="road">
+        <div class="stage done"><span class="st">Done</span><h3>Prove it works</h3><p>The whole network runs on a public testnet with a real microcontroller as the meter. In tests 12 nodes settled 99.7% of work and a lying node was slashed within a minute.</p></div>
+        <div class="stage"><span class="st">Next</span><h3>Make it cheap</h3><p>Settle one proof per node per hour instead of every unit. Our model takes a device's cost from about $42 to about $1.54 a month.</p></div>
+        <div class="stage"><span class="st">Then</span><h3>Make it safe</h3><p>A third-party audit of the contracts, real meters and cellular devices in the field, and a mainnet launch.</p></div>
+        <div class="stage"><span class="st">Finally</span><h3>Hand it over</h3><p>Renounce the admin key. From then on the network's verifiers, weighted by stake, are the only ones who can change it.</p></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<section class="night close" aria-labelledby="h-close">
+  <div class="wrap">
+    <h2 id="h-close">The machines are already talking. <span>Now they can be held to their word.</span></h2>
+    <p>If you build devices, run infrastructure or depend on machine data, we would like you to help build this with us.</p>
+    <div class="cta">
+      <a class="btn" href="https://claude.ai/artifact/Ks9DyraptN84Vk68gqApZK" target="_blank" rel="noopener">Read the docs</a>
+      <a class="btn line" href="https://claude.ai/artifact/4rr2BAA3RL1dSj6jmCTdxn" target="_blank" rel="noopener">Back to the overview</a>
+    </div>
+    <div class="sign"><span>The xid thesis · November 2026</span><span>xid network runs on testnet today.</span></div>
+  </div>
+</section>
+
+<script>
+(() => {
+  const bar = document.getElementById('progress')
+  const update = () => {
+    const h = document.documentElement.scrollHeight - innerHeight
+    bar.style.transform = `scaleX(${h > 0 ? Math.min(1, scrollY / h) : 0})`
+  }
+  addEventListener('scroll', update, { passive: true })
+  addEventListener('resize', update)
+  update()
+})()
+</script>

@@ -1,0 +1,6 @@
+# Merged into the examples' sdkconfig for release builds (BOAT_RELEASE=1, see
+# tools/release/build-firmware.sh) instead of the developer's sdkconfig.wifi:
+# a released image carries no Wi-Fi network. The device gets one from the
+# person who installs it (Improv in the browser installer, or AT+WIFI).
+CONFIG_EXAMPLE_WIFI_SSID=""
+CONFIG_EXAMPLE_WIFI_PASSWORD=""

@@ -41,12 +41,12 @@ try {
   const acct = (i) => HDNodeWallet.fromPhrase(MNEMONIC, undefined, `m/44'/60'/0'/0/${i}`).connect(chain.provider)
   const [admin, payer, ...ops] = [0, 1, 2, 3, 4].map(acct)
   const token = await deployTestToken(admin)
-  const reg = await deploy(admin, { token: await token.getAddress(), minStake: 100_000000n, unbonding: 600, epochLength: 15, jobNotice: 10 })
+  const reg = await deploy(admin, { token: await token.getAddress(), minStake: 100_000000n, unbonding: 600, epochLength: 15, jobNotice: 10, plan: { spare: 10 } })
   for (const o of [payer, ...ops]) await (await token.mint(o.address, 1000_000000n)).wait()
   for (const [i, o] of ops.entries()) {
     nodes.push(await createBoatNode({
       dht: testnet.createNode(), seed: Buffer.alloc(32, 0x70 + i), operator: o, registry: await reg.getAddress(), roles: 15, autoRegister: true,
-      storage: path.join(tmp, 'n' + i), network: 'boat-sealed', jobPollMs: 1000, listMs: 60000, settleDelayMs: 800, backupMs: 2500, rewardMs: 30000, spare: 10, watchers: 10
+      storage: path.join(tmp, 'n' + i), network: 'boat-sealed', jobPollMs: 1000, listMs: 60000, settleDelayMs: 800, backupMs: 2500, rewardMs: 30000, watchers: 10
     }))
   }
   const [N1, N2, N3] = nodes

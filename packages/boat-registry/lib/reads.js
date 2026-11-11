@@ -8,7 +8,8 @@
 // it redeems now and then (BoatReads.redeem). Index and head are free, and so
 // are a few blocks per remote key and window, for the verifiers' spot checks.
 
-import { getBytes, verifyMessage } from 'ethers'
+import { getBytes } from 'ethers'
+import { recoverSigner } from './recover.js'
 import { readStatementOf } from './registry.js'
 
 // the store's side: authorize() for boat-mqtt-node's store, and redeem()
@@ -61,7 +62,7 @@ export class ReadSeller {
     }
     let reader
     try {
-      reader = verifyMessage(getBytes(readStatementOf(this.ctx, v.reader, this.operator.address, BigInt(v.generation), BigInt(v.cumulative))), v.signature)
+      reader = recoverSigner(readStatementOf(this.ctx, v.reader, this.operator.address, BigInt(v.generation), BigInt(v.cumulative)), v.signature)
     } catch {}
     if (!reader || reader !== v.reader) return this._refuse('voucher not signed by the reader')
     const c = await this.channel(reader)

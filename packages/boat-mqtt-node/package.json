@@ -11,15 +11,19 @@
   "bin": {
     "boat-mqtt-node": "bin/boat-mqtt-node.js",
     "boat-mqtt-gateway": "bin/boat-mqtt-gateway.js",
-    "boat-mqtt-store": "bin/boat-mqtt-store.js"
+    "boat-mqtt-store": "bin/boat-mqtt-store.js",
+    "boat-watch": "examples/watch.js",
+    "boat-read-store": "examples/read-store.js"
   },
   "files": [
     "index.js",
     "lib",
-    "bin"
+    "bin",
+    "examples/watch.js",
+    "examples/read-store.js"
   ],
   "scripts": {
-    "test": "node test/run.js && node test/store.js && node test/sealed.js && node test/gateway.js"
+    "test": "node test/run.js && node test/retained.js && node test/burst.js && node test/store.js && node test/sealed.js && node test/gateway.js"
   },
   "license": "MIT",
   "engines": {
@@ -27,8 +31,8 @@
   },
   "dependencies": {
     "aedes": "1.2.0",
-    "boat-ota": "file:../boat-ota",
-    "boat-peer": "file:../boat-peer",
+    "boat-ota": "file:../../third_party/hyperdht-esp32/packages/boat-ota",
+    "boat-peer": "file:../../third_party/hyperdht-esp32/packages/boat-peer",
     "corestore": "7.16.1",
     "hyperbee": "2.27.3",
     "hyperdht": "6.36.0",

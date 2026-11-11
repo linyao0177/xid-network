@@ -1,7 +1,7 @@
 // JS for contracts/BoatRegistry.sol (ethers 6).
 
 import fs from 'fs'
-import { ContractFactory, Contract, getBytes, AbiCoder, keccak256 } from 'ethers'
+import { ContractFactory, Contract, getBytes, AbiCoder, keccak256, ZeroAddress } from 'ethers'
 
 const art = (name) => JSON.parse(fs.readFileSync(new URL(`../artifacts/${name}.json`, import.meta.url), 'utf8'))
 export const REGISTRY = art('BoatRegistry')
@@ -10,8 +10,19 @@ export const ROLES = { FORWARD: 1, STORE: 2, VERIFY: 4, COMPUTE: 8 }
 
 // epochLength: rewards earned in one epoch can be withdrawn after the next
 // one; jobNotice: how long a job keeps paying after its payer closes it
-export async function deploy (signer, { token, minStake, unbonding = 7 * 24 * 3600, quorumBps = 6667, epochLength = 3600, jobNotice = 3600 }) {
-  const c = await new ContractFactory(REGISTRY.abi, REGISTRY.bytecode, signer).deploy(token, minStake, unbonding, quorumBps, epochLength, jobNotice)
+// the plan settings every node uses (BoatRegistry.planParams): spare workers
+// beyond a job's quorum, and the plan's block (every `step` blocks, `lag`
+// behind the head). A chain that makes a block only for a transaction (anvil,
+// a local fork) needs step 1 and lag 0, or a job posted on a quiet chain would
+// wait for blocks that never come
+export const encodePlan = ({ spare, step, lag }) => BigInt(spare) | (BigInt(step) << 8n) | (BigInt(lag) << 40n)
+export const decodePlan = (p) => ({ spare: Number(BigInt(p) & 0xffn), step: Number((BigInt(p) >> 8n) & 0xffffffffn), lag: Number((BigInt(p) >> 40n) & 0xffffn) })
+
+export async function deploy (signer, { token, minStake, unbonding = 7 * 24 * 3600, quorumBps = 6667, epochLength = 3600, jobNotice = 3600, jobFee = 0n, plan = {} }) {
+  const local = (await signer.provider.getNetwork()).chainId === 31337n
+  const p = { spare: 1, step: local ? 1 : 10, lag: local ? 0 : 2, ...plan }
+  if (!(p.step >= 1)) throw new Error('plan step must be at least 1')
+  const c = await new ContractFactory(REGISTRY.abi, REGISTRY.bytecode, signer).deploy(token, minStake, unbonding, quorumBps, epochLength, jobNotice, jobFee, encodePlan(p))
   await c.waitForDeployment()
   return c
 }
@@ -31,15 +42,16 @@ export async function register (registry, operator, { dhtKey, roles, stake, toke
   return (await registry.connect(operator).register(asBytes32(dhtKey), roles, stake)).wait()
 }
 
-// an operator's signed word on a batch (also what anchor() records)
-export async function signAnchor (registry, operator, batch, root, count) {
-  const h = await registry.anchorStatement(operator.address, batch, root, count)
-  return operator.signMessage(getBytes(h))
+// a verifier's signed word on a batch of its verdicts (lib/verifier.js); off-chain
+export async function signVerdicts (registry, operator, batch, root, count) {
+  const { chainId } = await registry.runner.provider.getNetwork()
+  return operator.signMessage(getBytes(verdictsStatement({ registry: await registry.getAddress(), chainId }, operator.address, batch, root, count)))
 }
 
 // a verifier's signature on a judgement against operator
 export async function signSlash (registry, verifier, { operator, amount, reason, nonce }) {
-  const h = await registry.slashStatement(operator, amount, reason, nonce)
+  const { chainId } = await registry.runner.provider.getNetwork()
+  const h = slashStatementOf({ registry: await registry.getAddress(), chainId }, operator, amount, reason, nonce)
   return { address: verifier.address, signature: await verifier.signMessage(getBytes(h)) }
 }
 
@@ -59,7 +71,20 @@ export const workStatement = ({ registry, chainId }, job, unit, result) =>
   keccak256(abi.encode(['string', 'address', 'uint256', 'uint256', 'uint64', 'bytes32'], ['boat-work/1', registry, chainId, job, unit, result]))
 export const slashStatementOf = ({ registry, chainId }, operator, amount, reason, nonce) =>
   keccak256(abi.encode(['string', 'address', 'uint256', 'address', 'uint256', 'bytes32', 'uint64'], ['boat-slash/1', registry, chainId, operator, amount, reason, nonce]))
+// what verifiers sign to govern (BoatRegistry.govern)
+export const governStatementOf = ({ registry, chainId }, kind, target, value, nonce) =>
+  keccak256(abi.encode(['string', 'address', 'uint256', 'uint8', 'address', 'uint256', 'uint64'], ['boat-govern/1', registry, chainId, kind, target, value, nonce]))
 export const settledKey = (job, unit) => keccak256(abi.encode(['uint256', 'uint64'], [job, unit]))
+// a batch of a job's units (BoatRegistry.settleBatch): what its nodes sign, and
+// where the contract records it as settled
+// (forwarder: the node a forward job's batch pays; ZeroAddress for other jobs)
+export const batchStatement = ({ registry, chainId }, job, batch, root, units, forwarder = ZeroAddress) =>
+  keccak256(abi.encode(['string', 'address', 'uint256', 'uint256', 'uint64', 'bytes32', 'uint32', 'address'], ['boat-batch/2', registry, chainId, job, batch, root, units, forwarder]))
+export const batchKey = (job, batch) => keccak256(abi.encode(['string', 'uint256', 'uint64'], ['batch', job, batch]))
+export const batchLeaf = (unit, result) => keccak256(abi.encode(['uint64', 'bytes32'], [BigInt(unit), result]))
+// a verifier's batch of verdicts (lib/verifier.js): signed, published, never on chain
+export const verdictsStatement = ({ registry, chainId }, operator, batch, root, count) =>
+  keccak256(abi.encode(['string', 'address', 'uint256', 'address', 'uint64', 'bytes32', 'uint32'], ['boat-verdicts/1', registry, chainId, operator, batch, root, count]))
 
 // signers of what the contract counts must come sorted by address
 export const sortBySigner = (list) => list.slice().sort((a, b) => (BigInt(a.operator ?? a.address) < BigInt(b.operator ?? b.address) ? -1 : 1))
@@ -113,7 +138,8 @@ export const attachReads = (address, runner) => new Contract(address, READS.abi,
 
 // a verifier's signature on a governance change
 export async function signGovern (registry, verifier, { kind, target, value, nonce }) {
-  const h = await registry.governStatement(kind, target, value, nonce)
+  const { chainId } = await registry.runner.provider.getNetwork()
+  const h = governStatementOf({ registry: await registry.getAddress(), chainId }, kind, target, value, nonce)
   return { address: verifier.address, signature: await verifier.signMessage(getBytes(h)) }
 }
 

@@ -1,5 +1,6 @@
-// A verifier node: checks what devices publish, signs its verdicts in
-// batches, and anchors each batch's Merkle root on the registry.
+// A verifier node: checks what devices publish and signs its verdicts in
+// batches, published for anyone to check. (Verify jobs, lib/work.js, are how
+// verdicts get paid and settled on chain; this is the same judging on its own.)
 //
 // - It follows devices to their home nodes (boat-mqtt-node's Follower) and
 //   gives every message a verdict, a set of flags:
@@ -7,20 +8,19 @@
 //     REPLAY                   a sequence number seen before
 //     ATTESTED_OK / _BAD       a BoAT MER attested reading in the payload
 // - Every batchMs it puts the verdicts in a Merkle tree (keccak256 leaves, so
-//   a contract can check them too), signs the root with its operator key,
-//   anchors it with BoatRegistry.anchor(), and publishes the batch, leaves and
-//   all, retained at d/<verifier>/batches/<batch>. Anyone can rebuild the
-//   tree, check a verdict against the anchored root, and audit it: auditBatch()
-//   re-checks the verdicts of messages one also holds. A wrong verdict is
-//   judged by a quorum of verifiers (BoatRegistry.slash); two roots for one
-//   batch need no judge (slashEquivocation).
+//   a contract can check them too), signs the root with its operator key
+//   (verdictsStatement, for this registry and chain), and publishes the batch,
+//   leaves and all, retained at d/<verifier>/batches/<batch>. Anyone can
+//   rebuild the tree, check a verdict against the signed root, and audit it:
+//   auditBatch() re-checks the verdicts of messages one also holds. A wrong
+//   verdict is judged by a quorum of verifiers (BoatRegistry.slash).
 
 import { EventEmitter } from 'events'
 import { createRequire } from 'module'
 import { AbiCoder, keccak256, getBytes, verifyMessage } from 'ethers'
 import { Follower, open, seqOf } from 'boat-mqtt-node'
 import { merkleRoot, merkleProof, verifyProof } from './merkle.js'
-import { signAnchor } from './registry.js'
+import { signVerdicts, verdictsStatement } from './registry.js'
 
 const require = createRequire(import.meta.url)
 const { verifyReading } = require('boat-peer')
@@ -69,7 +69,7 @@ export class Verifier extends EventEmitter {
     this.dht = dht
     this.keyPair = keyPair
     this.publicKey = keyPair.publicKey
-    this.operator = operator // an ethers Wallet with a provider: signs and anchors
+    this.operator = operator // an ethers Wallet with a provider: signs its batches
     this.registry = registry.connect(operator)
     this.follower = new Follower({ dht, keyPair, role: 'verifier' })
     this.devices = devices
@@ -98,7 +98,7 @@ export class Verifier extends EventEmitter {
     this.emit('verdict', leaf)
   }
 
-  // signs and anchors what came in since the last batch
+  // signs and publishes what came in since the last batch
   async flush () {
     if (this.pending.length === 0 || this._flushing) return null
     this._flushing = true
@@ -106,9 +106,8 @@ export class Verifier extends EventEmitter {
       const leaves = this.pending.splice(0)
       const batch = Math.floor(Date.now() / 1000)
       const root = merkleRoot(leaves.map(leafOf))
-      const signature = await signAnchor(this.registry, this.operator, batch, root, leaves.length)
-      const tx = await (await this.registry.anchor(batch, root, leaves.length)).wait()
-      const b = { v: 1, verifier: this.publicKey.toString('hex'), operator: this.operator.address, batch, root, count: leaves.length, signature, tx: tx.hash, leaves }
+      const signature = await signVerdicts(this.registry, this.operator, batch, root, leaves.length)
+      const b = { v: 1, verifier: this.publicKey.toString('hex'), operator: this.operator.address, batch, root, count: leaves.length, signature, leaves }
       this.batches.push(b)
       await this.follower.publish(`d/${this.publicKey.toString('hex')}/batches/${batch}`, JSON.stringify(b), { qos: 1, retain: true })
       this.emit('batch', b)
@@ -124,15 +123,15 @@ export class Verifier extends EventEmitter {
   }
 }
 
-// checks a published batch: the operator's signature, the root it rebuilds,
-// and the root anchored on the registry. { ok, reason }
+// checks a published batch: the root it rebuilds and the operator's
+// signature on it, for this registry and chain. { ok, reason }
 export async function checkBatch (registry, b) {
   const root = merkleRoot(b.leaves.map(leafOf))
   if (root !== b.root) return { ok: false, reason: 'leaves do not make the root' }
-  const statement = await registry.anchorStatement(b.operator, b.batch, b.root, b.count)
+  if (b.count !== b.leaves.length) return { ok: false, reason: 'count does not match the leaves' }
+  const { chainId } = await registry.runner.provider.getNetwork()
+  const statement = verdictsStatement({ registry: await registry.getAddress(), chainId }, b.operator, b.batch, b.root, b.count)
   if (verifyMessage(getBytes(statement), b.signature) !== b.operator) return { ok: false, reason: 'not signed by the operator' }
-  const anchored = await registry.anchors(b.operator, b.batch)
-  if (anchored !== b.root) return { ok: false, reason: 'not the anchored root' }
   return { ok: true }
 }
 

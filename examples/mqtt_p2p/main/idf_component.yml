@@ -1,16 +1,17 @@
-# hyperdht-esp32's components, from this checkout. In your own project, list
+# hyperdht-esp32's components, from third_party/hyperdht-esp32 (a git submodule:
+# clone with --recursive). In your own project, list
 # tlay/hdht and tlay/hdht_mqtt with a version instead, or keep override_path
 # pointing at your copy of components/.
 dependencies:
   tlay/hdht:
     version: "0.1.0"
-    override_path: "../../../components/hdht"
+    override_path: "../../../third_party/hyperdht-esp32/components/hdht"
   tlay/hdht_mqtt:
     version: "0.1.0"
-    override_path: "../../../components/hdht_mqtt"
+    override_path: "../../../third_party/hyperdht-esp32/components/hdht_mqtt"
   tlay/libudx:
     version: "0.1.0"
-    override_path: "../../../components/libudx"
+    override_path: "../../../third_party/hyperdht-esp32/components/libudx"
   tlay/uv_esp:
     version: "0.1.0"
-    override_path: "../../../components/uv_esp"
+    override_path: "../../../third_party/hyperdht-esp32/components/uv_esp"

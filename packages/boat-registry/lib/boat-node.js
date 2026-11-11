@@ -18,13 +18,18 @@ import fs from 'fs'
 import http from 'http'
 import { EventEmitter } from 'events'
 import HyperDHT from 'hyperdht'
-import { Contract, AbiCoder, keccak256 } from 'ethers'
+import { monitorEventLoopDelay } from 'perf_hooks'
+import { Contract, AbiCoder, keccak256, ZeroAddress } from 'ethers'
+import { assignedRole } from './assign.js'
+import { ChainView } from './chain.js'
 import { createNode, createStore, Follower, openLog, decodeEntry, KeyRing, open } from 'boat-mqtt-node'
-import { attach, attachReads, register, ROLES, TEST_TOKEN } from './registry.js'
+import { attach, attachReads, register, ROLES, TEST_TOKEN, decodePlan } from './registry.js'
 import { ReadSeller } from './reads.js'
 import { readJob, Worker, Settler, ROLE_NAME } from './work.js'
 import { Watchtower } from './watch.js'
 import { roleKeyPair, putRecord, buildNodeList, publishNodeList, readCard, hex } from './nodelist.js'
+
+const abi = AbiCoder.defaultAbiCoder()
 
 export async function createBoatNode (opts) {
   const n = new BoatNode(opts)
@@ -37,7 +42,8 @@ export class BoatNode extends EventEmitter {
     dht, bootstrap, seed, operator, registry, roles = null, stake = null, autoRegister = false,
     storage = './boat-node', network, maxJobs = 20, jobPollMs = 15000, listMs = 300000,
     settleDelayMs = 5000, backupMs = 20000, rewardMs = 600000, autoWithdraw = true, statusFile = null,
-    spotters = 2, spotEvery = 10, lie = null, drop = null, reads = null, readPrice = null, metricsPort = null, spare = 1, watchers = 3
+    spotters = 2, spotEvery = 10, lie = null, drop = null, reads = null, readPrice = null, metricsPort = null, spare = null, watchers = 3,
+    overloadMs = 2000, loadCheckMs = 60000, fromBlock = null
   }) {
     super()
     this.dht = dht || new HyperDHT({ bootstrap })
@@ -50,7 +56,14 @@ export class BoatNode extends EventEmitter {
     this.autoRegister = autoRegister
     this.storage = storage
     this.network = network
-    this.maxJobs = maxJobs
+    this.maxJobs = maxJobs // this node's capacity on the registry: the most jobs it is assigned
+    this.overloadMs = overloadMs // event-loop delay (p99) above which the node takes no more jobs
+    this.loadCheckMs = loadCheckMs
+    this.capacity = null // as the registry has it
+    this.lowered = false // capacity lowered for overload
+    this.calm = 0 // load checks in a row well under overloadMs
+    // where the registry's events start (null: found by a search)
+    this.fromBlock = fromBlock
     this.jobPollMs = jobPollMs
     this.listMs = listMs
     this.settleDelayMs = settleDelayMs
@@ -62,7 +75,7 @@ export class BoatNode extends EventEmitter {
     this.readsAddress = reads // BoatReads: the store sells reads at readPrice per block
     this.readPrice = readPrice
     this.metricsPort = metricsPort
-    this.spare = spare // signers a job gets beyond its quorum
+    this.wantSpare = spare // (the network's, BoatRegistry.planParams, is used)
     this.watchers = watchers // verifiers that watch a job
     this.spotEvery = spotEvery // a store's units spot-checked: one in spotEvery
     this._assigned = new Map() // role:job -> { at, yes }
@@ -72,7 +85,6 @@ export class BoatNode extends EventEmitter {
     this.backfilled = 0 // readings fetched from stores to complete units
     this.forwarding = new Set() // devices of forward jobs this node forwards for, if they come here
     this._following = new Set()
-    this._active = new Map() // role -> { at, list }
     this.waiting = new Map() // id -> job not taken (yet)
     this.lie = lie || {}
     this.drop = drop // tests: (topic, payload) => true to lose a reading on the way // tests: { compute|verify|store: (result, detail, unit) => ({ result, detail }) }
@@ -104,6 +116,23 @@ export class BoatNode extends EventEmitter {
     const net = await provider.getNetwork()
     this.ctx = { registry: await this.registry.getAddress(), chainId: net.chainId, nodeKey: hex(this.keys.work.publicKey) }
     this.minStake = await this.registry.minStake()
+    // how every node plans, the same for all: the registry's settings
+    const plan = decodePlan(await this.registry.planParams())
+    this.spare = plan.spare // signers a job gets beyond its quorum
+    if (this.wantSpare !== null && this.wantSpare !== plan.spare) this.log(`spare ${this.wantSpare} ignored: the network's is ${plan.spare}`)
+    // what this node signed is kept per chain and registry: a redeployed
+    // registry starts its job ids again
+    this.signedDir = path.join(this.storage, 'signed', `${net.chainId}-${this.ctx.registry.toLowerCase()}`)
+    fs.mkdirSync(this.signedDir, { recursive: true })
+    this.chain = new ChainView({
+      registry: this.registry,
+      provider,
+      fromBlock: this.fromBlock,
+      step: plan.step,
+      lag: plan.lag,
+      minStake: this.minStake,
+      file: path.join(this.storage, `chain-${this.ctx.registry.toLowerCase()}.json`)
+    })
 
     // registration
     let n = await this.registry.nodes(this.operator.address)
@@ -120,16 +149,26 @@ export class BoatNode extends EventEmitter {
     if (n.dhtKey.slice(2) !== hex(this.keyPair.publicKey)) throw new Error('the registry names another key for this operator: wrong seed?')
     if (!n.active) throw new Error('this node is not active on the registry (unbonding or slashed below the minimum)')
     this.roles = Number(n.roles)
+    // capacity: every node plans assignments from it, so it lives on the registry
+    this.capacity = Number(n.capacity)
+    const want = Math.min(this.maxJobs, 0xffffffff)
+    if (this.capacity !== want) {
+      await this.tx(async () => (await this.registry.setCapacity(want)).wait())
+      this.capacity = want
+      this.log(`capacity set to ${want} jobs`)
+    }
 
     // roles
     if (this.roles & ROLES.FORWARD) {
-      this.forward = await createNode({ dht: this.dht, keyPair: this.keyPair, network: this.network })
+      // work messages are retained (late followers get them) for an hour:
+      // each unit has its own topic, so kept for ever they fill the broker
+      this.forward = await createNode({ dht: this.dht, keyPair: this.keyPair, network: this.network, retainTtl: (topic) => (/^d\/[0-9a-f]+\/work\//.test(topic) ? 3600000 : 0) })
       this.forward.on('published', (e) => {
         for (const w of this.allWorkers()) w.published(e)
         // a device on this node with a forward job: follow it here, to hear the witnesses
         if (this.forwarding.has(e.key) && !this.follower.homes.has(e.key) && !this._following.has(e.key)) {
           this._following.add(e.key)
-          this.follower.follow(e.key).then(() => this.follower.watch('d/+/work/#'), () => this._following.delete(e.key))
+          this.follower.follow(e.key).then(() => this.follower.watchDevice(e.key, `d/+/work/${e.key}/#`), () => this._following.delete(e.key))
         }
       })
       this.log(`forwarding as ${hex(this.keyPair.publicKey)}`)
@@ -158,12 +197,21 @@ export class BoatNode extends EventEmitter {
       try { device = this.jobs.get(JSON.parse(payload).job)?.device } catch {}
       return device ? this.follower.publishTo(device, topic, payload, opts) : this.follower.publish(topic, payload, opts)
     }
-    this.settler = new Settler({ registry: this.registry, operator: this.operator, ctx: this.ctx, jobs: this.jobs, settleDelayMs: this.settleDelayMs, backupMs: this.backupMs, tx: this.tx })
+    this.settler = new Settler({ registry: this.registry, operator: this.operator, ctx: this.ctx, jobs: this.jobs, settleDelayMs: this.settleDelayMs, backupMs: this.backupMs, tx: this.tx, publish, batchMemory: (id) => this.batchMemoryOf(id), knownActive: (op, role) => this.chain.isActive(op, role) })
     this.settler.on('settled', (s) => {
-      if (s.by === 'us') this.log(`settled job ${s.job} unit ${unitText(s.unit)}: ${s.signers} signers, ${s.gas} gas${s.batch > 1 ? ` (a batch of ${s.batch})` : ''}`)
+      if (s.by === 'us' && s.kind === 'batch') this.log(`settled job ${s.job} batch ${unitText(s.batch)}: ${s.units} units, ${s.signers} signers, ${s.gas} gas${s.inTx > 1 ? ` (${s.inTx} batches in the transaction)` : ''}`)
+      else if (s.by === 'us') this.log(`settled job ${s.job} unit ${unitText(s.unit)}: ${s.signers} signers, ${s.gas} gas${s.batch > 1 ? ` (a batch of ${s.batch})` : ''}`)
       this.emit('settled', s)
     })
     this.settler.on('error', (err) => this.log('settle: ' + (err.shortMessage || err.message)))
+    // a node that signed two statements for one batch: the verifiers slash it
+    // (half its stake to the treasury), after a random wait so that most often
+    // one of them sends the transaction
+    this.settler.on('double-batch', (d) => {
+      this.log(`DOUBLE BATCH by ${d.operator.slice(0, 10)}… job ${d.job} batch ${unitText(d.batch)}`)
+      this.emit('double-batch', d)
+      if (this.roles & ROLES.VERIFY) this.slashDoubleBatch(d).catch((err) => this.log('slash double batch: ' + (err.shortMessage || err.message)))
+    })
     if (this.roles & ROLES.VERIFY) {
       this.watch = new Watchtower({
         dht: this.dht,
@@ -212,6 +260,9 @@ export class BoatNode extends EventEmitter {
     }
     this.every(this.rewardMs, () => this.checkRewards())
     if (this.statusFile) this.every(60000, () => this.writeStatus())
+    this.loopDelay = monitorEventLoopDelay({ resolution: 20 })
+    this.loopDelay.enable()
+    this.every(this.loadCheckMs, () => this.checkLoad())
     if (this.metricsPort !== null && this.metricsPort !== undefined) await this.serveMetrics(this.metricsPort)
     return this
   }
@@ -236,6 +287,9 @@ export class BoatNode extends EventEmitter {
     m('rewards_matured', 'rewards that can be withdrawn, base units', c.matured)
     m('rewards_withdrawn_total', 'rewards withdrawn since start, base units', this.withdrawn, 'counter')
     m('jobs', 'jobs worked on or watched', s.jobs.length)
+    m('capacity', 'jobs this node takes at most, as the registry has it (0: no limit)', this.capacity ?? 0)
+    m('loop_delay_p99_ms', 'event-loop delay, 99th percentile over the last load check', (this.loadP99 ?? 0).toFixed(1))
+    m('overloaded', '1 while the node has lowered its capacity for overload', this.lowered ? 1 : 0)
     m('units_signed_total', 'units this node signed', s.signed, 'counter')
     m('units_settled_total', 'units seen settled', s.settled.settled, 'counter')
     m('units_submitted_total', 'settlements this node sent', s.settled.submitted, 'counter')
@@ -264,6 +318,34 @@ export class BoatNode extends EventEmitter {
       this.metrics().then((body) => res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' }).end(body), (err) => res.writeHead(500).end(err.message))
     })
     return new Promise((resolve) => this.metricsServer.listen(port, '127.0.0.1', resolve))
+  }
+
+  // Overload: when the event loop's p99 delay stays over overloadMs for two
+  // checks in a row, the node lowers its capacity on the registry to the jobs
+  // it works on now, so the plan sends new jobs elsewhere (every node computes
+  // the same plan, so they all know). After ten calm checks in a row (p99
+  // under a quarter of overloadMs) it puts its capacity back to maxJobs.
+  async checkLoad () {
+    const p99 = this.loopDelay.percentile(99) / 1e6
+    this.loopDelay.reset()
+    this.loadP99 = p99
+    const busy = p99 > this.overloadMs
+    this.hot = busy ? (this.hot || 0) + 1 : 0
+    this.calm = p99 < this.overloadMs / 4 ? this.calm + 1 : 0
+    const working = [...this.workers.entries()].filter(([, list]) => list.some((w) => w.mode !== 'forwarder')).length
+    if (this.hot >= 2 && (this.capacity === 0 || working < this.capacity)) {
+      const cap = Math.max(1, working)
+      await this.tx(async () => (await this.registry.setCapacity(cap)).wait())
+      this.capacity = cap
+      this.lowered = true
+      this.log(`overloaded (event loop p99 ${p99.toFixed(0)} ms): capacity lowered to ${cap} jobs`)
+    } else if (this.lowered && this.calm >= 10) {
+      const cap = Math.min(this.maxJobs, 0xffffffff)
+      await this.tx(async () => (await this.registry.setCapacity(cap)).wait())
+      this.capacity = cap
+      this.lowered = false
+      this.log(`load back to normal (event loop p99 ${p99.toFixed(0)} ms): capacity back to ${cap} jobs`)
+    }
   }
 
   every (ms, fn) {
@@ -298,13 +380,23 @@ export class BoatNode extends EventEmitter {
 
   // open jobs: ours to work on, and every job to watch when we verify
   async pollJobs () {
-    // jobs already seen: a node newly assigned to one (another left) starts on it
-    for (const job of this.jobs.values()) if (!this.workers.has(job.id)) await this.ensureWorkers(job)
+    await this.chain.sync().catch((err) => this.log('chain: ' + (err.shortMessage || err.message)))
+    // jobs already seen: a node newly assigned to one (another left, or lowered
+    // its capacity) starts on it; one no longer assigned (this node lowered its
+    // capacity) stops, and the node it went to starts
+    for (const job of this.jobs.values()) {
+      if (!this.workers.has(job.id)) { if (await this.ensureWorkers(job)) this.replayOwn(job) } else if (job.role !== ROLES.FORWARD && !(await this.assigned(job, job.role))) {
+        this.workers.delete(job.id)
+        this._dropped = (this._dropped || 0) + 1
+        this.log(`left job ${job.id}: assigned to another node now (capacity)`)
+      }
+    }
     const waiting = [...this.waiting.values()]
     const count = Number(await this.registry.jobCount())
     for (; this.seenJobs < count; this.seenJobs++) {
       try {
-        waiting.push(await readJob(this.registry, this.seenJobs))
+        const job = await readJob(this.registry, this.seenJobs)
+        waiting.push(job)
       } catch (err) {
         this.log(err.message)
         if (/^job \d+:/.test(err.message)) continue // the job itself is bad: skip it
@@ -313,7 +405,13 @@ export class BoatNode extends EventEmitter {
     }
     for (const job of waiting) {
       const id = job.id
-      if (job.closesAt !== 0 || job.budget < job.pay) continue
+      // the chain view says what is open, as of the plan's block
+      if (!(id in this.chain.state.jobs)) {
+        if (id < this.chain.state.jobCount) this.waiting.delete(id) // closed: never again
+        else this.waiting.set(id, job) // posted after the plan's block: at the next step
+        continue
+      }
+      if (!this.chain.isOpen(id)) { this.waiting.set(id, job); continue } // spent (it may be funded again)
       const work = await this.ensureWorkers(job)
       const watch = await this.watching(job)
       if (!work && !watch) {
@@ -322,6 +420,7 @@ export class BoatNode extends EventEmitter {
       }
       this.waiting.delete(id)
       this.jobs.set(id, job)
+      if (work) this.replayOwn(job)
       // a node that only forwards for the job does not follow the device: its
       // messages come to this node when it is the device's node, or not at all
       const modes = (this.workers.get(id) || []).map((w) => w.mode)
@@ -331,8 +430,8 @@ export class BoatNode extends EventEmitter {
       }
       try {
         await this.follower.follow(job.device)
-        // one subscription per home node for all jobs' work (filtered here), not one per job
-        await this.follower.watch('d/+/work/#')
+        // the work on this device only (all its jobs), at its home node
+        await this.follower.watchDevice(job.device, `d/+/work/${job.device}/#`)
         if (this.watch) await this.follower.watch('d/+/faults/#') // and the fault mesh (listenFaults)
       } catch (err) {
         this.log(`job ${id}: cannot follow its device yet (${err.message}); retrying`)
@@ -348,16 +447,80 @@ export class BoatNode extends EventEmitter {
 
   // the units a worker signed, on disk (the last 512), so that a restart
   // never signs one again with another result
+  // the batch statements this node signed for a job, on disk and synced
+  // before a statement is published: a restart sends the same one again and
+  // never signs another for the batch (slashDoubleBatch). It keeps the last
+  // 2,048; `floor` is the oldest kept, and batches before it are never signed.
+  async slashDoubleBatch ({ job, batch, operator, a, b }, waitMs = Math.floor(Math.random() * 10000)) {
+    await new Promise((resolve) => setTimeout(resolve, waitMs))
+    const reason = keccak256(abi.encode(['string', 'uint256', 'uint64'], ['double-batch', job, batch]))
+    if (await this.registry.slashUsed(keccak256(abi.encode(['address', 'bytes32'], [operator, reason])))) return
+    const claim = (w) => ({ root: w.root, units: w.units, forwarder: w.forwarder || ZeroAddress, sig: w.signature })
+    const r = await this.tx(async () => (await this.registry.slashDoubleBatch(operator, job, batch, claim(a), claim(b))).wait())
+    this.log(`SLASHED ${operator.slice(0, 10)}… for a double batch, tx ${r.hash.slice(0, 12)}…`)
+    this.emit('slashed', { operator, kind: 'double-batch', tx: r.hash })
+  }
+
+  batchMemoryOf (id) {
+    this._batchMem = this._batchMem || new Map()
+    if (this._batchMem.has(id)) return this._batchMem.get(id)
+    const dir = this.signedDir
+    const file = path.join(dir, `${id}-batches.json`)
+    // a file that is there but cannot be read is not an empty one: the node
+    // signs no batch of this job until someone looks (it might have signed any)
+    let state = { floor: null, batches: {} }
+    let broken = false
+    try {
+      state = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (!state || typeof state.batches !== 'object') throw new Error('not batch memory')
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        broken = true
+        this.log(`batch memory ${file} unreadable (${err.message}): signing no batches of job ${id}`)
+      }
+      if (err.code === 'ENOENT' || !state || typeof state.batches !== 'object') state = { floor: null, batches: {} }
+    }
+    const mem = {
+      broken,
+      get floor () { return state.floor },
+      get: (batch) => state.batches[batch],
+      set: (batch, statement) => {
+        if (broken) throw new Error('batch memory unreadable')
+        // the statement, without its leaves (peers had them when it was new)
+        const { leaves, ...message } = statement.message || {}
+        state.batches[batch] = { ...statement, message }
+        const keys = Object.keys(state.batches).sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1))
+        if (keys.length > 2048) {
+          for (const k of keys.slice(0, keys.length - 2048)) delete state.batches[k]
+          state.floor = keys[keys.length - 2048]
+        }
+        const tmp = file + '.tmp'
+        const fd = fs.openSync(tmp, 'w')
+        fs.writeSync(fd, JSON.stringify(state))
+        fs.fsyncSync(fd)
+        fs.closeSync(fd)
+        fs.renameSync(tmp, file)
+        // and the rename itself, so a crash cannot bring the old file back
+        const d = fs.openSync(dir, 'r')
+        try { fs.fsyncSync(d) } catch {} finally { fs.closeSync(d) }
+      }
+    }
+    this._batchMem.set(id, mem)
+    return mem
+  }
+
   memoryOf (name) {
-    const dir = path.join(this.storage, 'signed')
-    fs.mkdirSync(dir, { recursive: true })
+    const dir = this.signedDir
     const file = path.join(dir, name + '.json')
+    // unit -> { result, signature, forwarder } (or, written by older
+    // versions, the result alone)
     let units = {}
     try { units = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
     return {
       get: (unit) => units[unit],
-      set: (unit, result) => {
-        units[unit] = result
+      entries: () => Object.entries(units),
+      set: (unit, signed) => {
+        units[unit] = signed
         const keys = Object.keys(units)
         if (keys.length > 512) for (const k of keys.slice(0, keys.length - 512)) delete units[k]
         fs.writeFileSync(file + '.tmp', JSON.stringify(units))
@@ -423,11 +586,11 @@ export class BoatNode extends EventEmitter {
 
   // the store keys of the stores that keep a device (the nodes assigned to its store jobs)
   async storesOf (device) {
-    const quorum = [...this.jobs.values(), ...this.waiting.values()].filter((j) => j.role === ROLES.STORE && j.device === device).map((j) => j.quorum)
-    if (!quorum.length) return []
-    const n = Math.max(...quorum) + this.spare
-    const score = (op) => keccak256(AbiCoder.defaultAbiCoder().encode(['address', 'bytes32'], [op, '0x' + device]))
-    const ops = (await this.activeOf(ROLES.STORE)).map((op) => [score(op), op]).sort((a, b) => (a[0] < b[0] ? -1 : 1)).slice(0, n).map(([, op]) => op)
+    const ids = [...this.jobs.values(), ...this.waiting.values()].filter((j) => j.role === ROLES.STORE && j.device === device).map((j) => j.id)
+    if (!ids.length) return []
+    // the nodes the plan gave the device's store jobs (M7, review 3)
+    const plan = await this.plan()
+    const ops = [...new Set(ids.flatMap((id) => plan.get(id) || []))]
     const keys = []
     for (const op of ops) {
       const card = await this.cardOf(op)
@@ -488,43 +651,31 @@ export class BoatNode extends EventEmitter {
     return this._jobCache.get(id)
   }
 
-  // the active operators of a role (looked up again every 5 minutes)
+  // the active operators of a role, as of the plan's block (lib/chain.js)
   async activeOf (role) {
-    const c = this._active.get(role)
-    if (c && c.list && Date.now() - c.at < 300000) return c.list
-    if (c && c.loading) return c.loading // one lookup at a time
-    const loading = (async () => {
-      const list = []
-      const count = await this.registry.operatorCount()
-      for (let i = 0n; i < count; i++) {
-        const op = await this.registry.operators(i)
-        const n = await this.registry.nodes(op)
-        if (n.active && n.stake >= this.minStake && (Number(n.roles) & role)) list.push(op)
-      }
-      this._active.set(role, { at: Date.now(), list })
-      return list
-    })()
-    this._active.set(role, { ...c, loading })
-    return loading.catch((err) => {
-      this._active.delete(role)
-      throw err
-    })
+    if (this.chain.block < 0) await this.chain.sync()
+    return this.chain.active(role)
   }
 
   // the quorum + spare nodes of a role that work on a job: the first by
   // keccak(operator, device). Others of the role leave it to them, so a unit
   // gets a few signatures, not one from every node; and all the jobs on one
   // device go to the same few nodes, so few nodes follow each device.
+  // (with capacities: lib/assign.js; every node computes the same plan, from
+  // the registry's events as of the same block: lib/chain.js. A job posted
+  // after that block is nobody's yet: it is taken on at the next step)
   async assigned (job, role) {
-    const active = await this.activeOf(role)
-    const at = this._active.get(role).at
-    const k = role + ':' + job.device + ':' + (job.quorum + this.spare)
-    const c = this._assigned.get(k)
-    if (c && c.at === at) return c.yes
-    const score = (op) => keccak256(AbiCoder.defaultAbiCoder().encode(['address', 'bytes32'], [op, '0x' + job.device]))
-    const yes = active.map((op) => [score(op), op]).sort((a, b) => (a[0] < b[0] ? -1 : 1)).slice(0, job.quorum + this.spare).some(([, op]) => op === this.operator.address)
-    this._assigned.set(k, { at, yes })
-    return yes
+    const plan = await this.plan()
+    return (plan.get(job.id) || []).includes(this.operator.address) && assignedRole(job) === role
+  }
+
+  async plan () {
+    if (this.chain.block < 0) await this.chain.sync()
+    const key = this.chain.version
+    if (this._plan && this._plan.key === key) return this._plan.plan
+    const { plan, load } = this.chain.plan([ROLES.STORE, ROLES.VERIFY, ROLES.COMPUTE], this.spare)
+    this._plan = { key, plan, load }
+    return plan
   }
 
   // does this node watch the job (its watchtower judges it)?
@@ -544,7 +695,7 @@ export class BoatNode extends EventEmitter {
     } else if ((this.roles & job.role) && (await this.assigned(job, job.role))) {
       modes.push(null)
     }
-    if (modes.length === 0 || this.workers.size >= this.maxJobs) return false
+    if (modes.length === 0) return false
     const list = modes.map((mode) => {
       const w = new Worker({
         job,
@@ -562,7 +713,7 @@ export class BoatNode extends EventEmitter {
       w.on('signed', (m) => {
         if (!m) return
         this.emit('signed', m)
-        this.settler.add(m).catch((err) => this.log('settle: ' + err.message))
+        this.settler.add(m, { own: true }).catch((err) => this.log('settle: ' + err.message))
         if (this.watch) this.watch.work(m).catch(() => {})
       })
       w.on('error', (err) => this.log(`job ${id}: ${err.message}`))
@@ -572,6 +723,21 @@ export class BoatNode extends EventEmitter {
     this.workers.set(id, list)
     if (job.role === ROLES.STORE) await this.store.follow(job.device).catch((err) => this.log(`store: ${err.message}`))
     return true
+  }
+
+  // a batch job's units this node signed before a restart: back into the
+  // Settler, so that its batches hold them (M2, review 3). Its workers never
+  // sign them again, and its own retained messages count only from its workers
+  replayOwn (job) {
+    if (!job.batchUnits) return
+    for (const w of this.workers.get(job.id) || []) {
+      if (!w.memory || !w.memory.entries || w.mode === 'forwarder') continue
+      for (const [unit, m] of w.memory.entries()) {
+        if (!m || typeof m !== 'object' || !m.signature) continue // (older files: the result alone)
+        const msg = { v: 1, job: job.id, unit, role: job.role, device: job.device, result: m.result, operator: this.operator.address, node: this.ctx.nodeKey, detail: m.forwarder ? { forwarder: m.forwarder } : {}, signature: m.signature }
+        this.settler.add(msg, { own: true }).catch(() => {})
+      }
+    }
   }
 
   * allWorkers () {
@@ -594,7 +760,8 @@ export class BoatNode extends EventEmitter {
     if (kind === 'work') {
       let w
       try { w = JSON.parse(payload.toString()) } catch { return }
-      if (this.workers.has(w.job)) await this.settler.add(w).catch(() => {})
+      // (and statements for a job this node left with batches still open)
+      if (this.workers.has(w.job) || (w.kind === 'batch' && this.settler.hasOpenBatches(w.job))) await this.settler.add(w).catch(() => {})
       if (this.watch) await this.watch.work(w).catch((err) => this.log('watch: ' + err.message))
     } else if (kind === 'faults' && this.watch) {
       await this.watch.peer(from, topic, payload).catch((err) => this.log('watch: ' + err.message))
@@ -622,6 +789,8 @@ export class BoatNode extends EventEmitter {
       roles: this.roles,
       jobs: [...this.jobs.keys()],
       signed: workers.reduce((a, w) => a + w.signedCount, 0),
+      capacity: this.capacity,
+      overloaded: this.lowered,
       // by kind of job: workers, units signed, messages taken and refused,
       // units dropped short and units that were short a while
       work: workers.reduce((a, w) => {
@@ -649,6 +818,7 @@ export class BoatNode extends EventEmitter {
 
   async close () {
     for (const t of this.timers) clearInterval(t)
+    this.loopDelay?.disable()
     this.metricsServer?.close()
     this.settler?.close()
     await this.follower?.close()

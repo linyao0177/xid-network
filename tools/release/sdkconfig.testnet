@@ -1,0 +1,7 @@
+# Merged into examples/boat_device_min's release build (after sdkconfig.release):
+# the public testnet (https://iot.xid.network/testnet.json). The device trusts
+# the node list its four verifiers publish; `boat verifiers` / `boat network`
+# on the console change both. Regenerate from testnet.json when its
+# verifiers change.
+CONFIG_BOAT_NETWORK="xid-testnet"
+CONFIG_BOAT_VERIFIERS="6d8944da6b0bbed787413f1e9c8d1092d7bdfa87a297e8a2281c2625bafd109b,6ec76553c6b5202941d2bd3729a2ec31c623a03f2bac37633dc6b53e9fe7c600,9162923de40448c8aa2b406ee12652f60ce214d4d115239527973df3da45f48e,6fb5b23af0567b58832450be73f8094c8ef27513540aa81e926190159c5bd3ef"

@@ -1,14 +1,21 @@
 #!/usr/bin/env node
 // boat-node: run a node of the network in the roles it registers for.
 //
-//   boat-node init <dir> [--roles forward,store,verify,compute] [--rpc url] [--registry 0x..]
+//   boat-node init <dir> [--testnet] [--roles forward,store,verify,compute] [--rpc url]
+//       [--registry 0x..] [--network name] [--from-block n] [--reads 0x..]
 //       makes <dir>/node.json, a seed and an operator key (mode 600) and
 //       prints the operator's address: fund it with gas and the stake token
 //   boat-node run <dir>        registers when needed, then works
 //   boat-node status <dir>     what the registry says about this node
 //
 // node.json: { rpc, registry, roles: [..], stake, autoRegister, network,
-//   maxJobs, bootstrap: ["host:port"], listMs, rewardMs, autoWithdraw,
+//   maxJobs (the node's capacity, on the registry), overloadMs (event-loop p99
+//   delay that lowers it, default 2000), bootstrap: ["host:port"], listMs,
+//   rewardMs, autoWithdraw,
+//   fromBlock (the registry's deploy block: where its events start; found by
+//   a search when left out; deployment.json's `block`). How jobs are assigned
+//   (spare workers, the plan's block) is the registry's, the same for every
+//   node,
 //   reads: <BoatReads address>, readPrice: <per block> (a store sells reads),
 //   metricsPort: <port> (Prometheus metrics on 127.0.0.1) }
 // testLie: "compute" makes the node sign bills three times too high, to see
@@ -37,6 +44,7 @@ const usage = () => {
 }
 if (!dir) usage()
 
+const TESTNET_URL = 'https://iot.xid.network/testnet.json'
 const file = (name) => path.join(dir, name)
 const secret = (name, make) => {
   if (!fs.existsSync(file(name))) fs.writeFileSync(file(name), make(), { mode: 0o600 })
@@ -47,16 +55,24 @@ const rolesOf = (names) => names.reduce((a, n) => a | ROLES[n.toUpperCase()], 0)
 if (cmd === 'init') {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   if (!fs.existsSync(file('node.json'))) {
+    // --testnet: the public testnet's chain, contracts and network name, from
+    // the file the site publishes (or --testnet-url)
+    const net = rest.includes('--testnet') || opt('testnet-url')
+      ? await (await fetch(opt('testnet-url', TESTNET_URL))).json()
+      : {}
     const config = {
-      rpc: opt('rpc', 'http://127.0.0.1:8545'),
-      registry: opt('registry', ''),
+      rpc: opt('rpc', net.rpc ?? 'http://127.0.0.1:8545'),
+      registry: opt('registry', net.registry ?? ''),
       roles: opt('roles', 'forward,store,verify,compute').split(','),
       stake: opt('stake', null),
       autoRegister: true,
-      network: opt('network', 'boat-mqtt'),
+      network: opt('network', net.network ?? 'boat-mqtt'),
       maxJobs: 20,
       autoWithdraw: true
     }
+    const fromBlock = opt('from-block', net.block ?? null)
+    if (fromBlock !== null) config.fromBlock = Number(fromBlock)
+    if (opt('reads', net.reads)) config.reads = opt('reads', net.reads)
     fs.writeFileSync(file('node.json'), JSON.stringify(config, null, 2) + '\n')
   }
   const seed = Buffer.from(secret('seed', () => crypto.randomBytes(32).toString('hex')), 'hex')
@@ -114,7 +130,8 @@ const node = new BoatNode({
   metricsPort: config.metricsPort,
   settleDelayMs: config.settleDelayMs,
   backupMs: config.backupMs,
-  spare: config.spare,
+  overloadMs: config.overloadMs,
+  fromBlock: config.fromBlock ?? null,
   lie: config.testLie === 'compute' ? { compute: (result, detail) => ({ detail: { ...detail, value: String(BigInt(detail.value) * 3n) } }) } : null
 })
 node.on('log', log)

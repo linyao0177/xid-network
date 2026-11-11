@@ -1,4 +1,5 @@
-// The node list in C (components/hdht_mqtt nodelist.c) against the JS:
+// The node list in C (hyperdht-esp32's components/hdht_mqtt nodelist.c, the
+// third_party submodule) against the JS:
 // node test/nodelist-c.js (needs clang and libsodium)
 import fs from 'fs'
 import os from 'os'
@@ -14,7 +15,7 @@ function check (name, ok, detail = '') {
   console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? '  ' + detail : ''}`)
 }
 
-const dir = new URL('../../../components/hdht_mqtt/', import.meta.url).pathname
+const dir = new URL('../../../third_party/hyperdht-esp32/components/hdht_mqtt/', import.meta.url).pathname
 const sodium = ['/opt/homebrew', '/usr/local', '/usr'].find((p) => fs.existsSync(path.join(p, 'include', 'sodium.h')))
 if (!sodium) {
   console.log('SKIP: no libsodium')
