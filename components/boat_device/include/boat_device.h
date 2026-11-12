@@ -18,7 +18,8 @@
 // - Nodes: the staked nodes a quorum of its trusted verifiers lists
 //   (components/hdht_mqtt node list), else the nodes announced under
 //   `network`; it moves to another when one goes away, and names the node it
-//   is on in its DID record so apps and nodes find it.
+//   is on in its DID record so apps and nodes find it. With `node`, it dials
+//   that one first when it is among them (one near it: short round trips).
 // - Messages: every publish is signed (hdht_mqtt_sign), with a sequence
 //   number that rises across reboots (a boot counter in NVS), so anyone
 //   checks it whatever node it came through.
@@ -48,6 +49,7 @@ typedef struct {
   const char *nvs_namespace;     // seed, boot counter, record seq, trusted verifiers (max 15 chars)
   const char *network;           // network name to look up without a node list; default "boat-mqtt"
   const char *verifiers;         // comma-separated verify keys (hex), or NULL
+  const char *node;              // a node to dial first when listed (hex key), or NULL
   const char *readers;           // comma-separated Ed25519 keys (hex) that may read sealed readings, or NULL
   boat_device_message_cb on_message;
   void (*on_connected)(const char *node_hex, void *ctx);

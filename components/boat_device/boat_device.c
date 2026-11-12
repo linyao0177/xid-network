@@ -228,6 +228,8 @@ on_ready (hdht_t *d, int status) {
     ESP_LOGE(TAG, "no memory for the transport");
     return;
   }
+  uint8_t node[1][32];
+  if (parse_keys(cfg.node, node, 1) == 1) hdht_mqtt_transport_prefer(transport, node[0]);
   uint32_t pick = ((uint32_t) pk[0] << 24) | ((uint32_t) pk[1] << 16) | ((uint32_t) pk[2] << 8) | pk[3];
   if (hdht_mqtt_nodelist_keep(d, transport, ns, cfg.verifiers, pick, on_list_ready, NULL) != 0) start_mqtt();
 }

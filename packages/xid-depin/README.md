@@ -139,8 +139,10 @@ A device publishes, signed with its own key (boat-mqtt-node's signed messages):
 An ESP32 station runs [`examples/depin_station`](../../examples/depin_station) (component [`boat_depin`](../../components/boat_depin)), whose beacons go over ESP-NOW. `xid-depin station` enrolls one and prints the line to type on its console:
 
 ```sh
-xid-depin station <dir> --device <its key> --lat <lat> --lon <lon> --payee 0x.. [--key <file>]
+xid-depin station <dir> --device <its key> --lat <lat> --lon <lon> --payee 0x.. [--node <key>] [--key <file>]
 ```
+
+The line names the node the station should be on: the oracle nearest to it, from the oracles' last signed indexes (their `loc`) and the node key each operator registered. An oracle's ping reaches a device through the device's node, so a device on a far node is far from every oracle; on the nearest oracle's node, that oracle's round trip is the device's own. A gateway on `lib/device.js` chooses its node with `home`.
 
 ## Tests
 

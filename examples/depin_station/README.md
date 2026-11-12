@@ -30,8 +30,21 @@ testnet's nodes (`tools/release/sdkconfig.testnet`).
    and starts working for the network.
 
    ```
-   depin set <network key> <cell> <payee> <start> <slot seconds> <topic> [rated W]
+   depin set <network key> <cell> <payee> <start> <slot seconds> <topic> [rated W] [node]
    ```
+
+   `node` is the network's oracle nearest to the station: the station dials
+   that node first (when the node list has it). Every oracle's ping goes
+   through the node a device is on, so on a node far away even a nearby
+   oracle's round trip is long and says nothing about where the station is.
+   On the nearest oracle's node, that oracle's round trip is the station's
+   alone. `DEPIN|on node … (the one near it)` says it got there. If that
+   node does not answer, the station takes another one and tries the near
+   one again ten minutes later.
+
+`sdkconfig.defaults` turns off Wi-Fi A-MPDU receive: with it on, the
+board's Wi-Fi held each arriving frame for about 150 ms, and the oracles'
+round trips with it.
 
 ## Console
 

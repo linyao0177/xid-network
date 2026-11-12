@@ -22,9 +22,11 @@
 //       (the key pays the fee, or the testnet does), join records, readings,
 //       beacons and pongs
 //   xid-depin station <dir> --device <key> --lat <lat> --lon <lon> --payee 0x..
-//       [--rated W] [--key <file> | --enroll-via https://iot.xid.network]
+//       [--rated W] [--node <node key>] [--key <file> | --enroll-via https://iot.xid.network]
 //       a hardware station (examples/depin_station): enrolls it and prints
-//       the line to type on its console
+//       the line to type on its console, with the node it should be on: the
+//       network's oracle nearest to it (from their last signed indexes), so
+//       the oracles' pings to it take a short way
 //   xid-depin status <dir>
 //   xid-depin rewards <dir> <epoch>
 //   xid-depin audit <dir> <epoch>
@@ -45,7 +47,7 @@ import { loadTemplate, templates, checkConfig, configHash } from '../lib/config.
 import { curveOf, emission } from '../lib/curve.js'
 import { deployNetwork, attachNetwork, attachToken, networkInfo } from '../lib/network.js'
 import { DepinDevice, SimRadio } from '../lib/device.js'
-import { cellAt } from '../lib/geo.js'
+import { cellAt, distanceKm } from '../lib/geo.js'
 import { hex } from '../lib/records.js'
 import { scoreEpoch, claimOf, leafOf } from '../lib/score.js'
 import { openIndex } from '../lib/oracle.js'
@@ -371,8 +373,35 @@ if (cmd === 'templates') {
     log('enrolled by the testnet')
   }
   const cell = cellAt(lat, lon, config.location.resolution)
+  // the node it should be on: the oracle nearest to it. Every oracle's ping
+  // goes through the node a device is on, so a device on a far node is far
+  // from all of them (and its round trips rule nothing out); on an oracle's
+  // own node, that oracle's round trip is the device's alone.
+  let node = opt('node') ? String(opt('node')).toLowerCase() : null
+  if (node && !/^[0-9a-f]{64}$/.test(node)) die('--node: a node key, 64 hex characters')
+  if (!node) {
+    const e = Number((await networkInfo(deployment.network, provider)).epoch)
+    for (const x of e > 0 ? [e - 1, e - 2].filter((n) => n >= 0) : []) {
+      const got = await gather(dir, x)
+      const near = got.indexes.filter((i) => i.loc && Number.isFinite(i.loc.lat) && Number.isFinite(i.loc.lon))
+        .map((i) => ({ operator: i.operator, km: distanceKm(lat, lon, i.loc.lat, i.loc.lon) }))
+        .sort((a, b) => a.km - b.km)
+      // the node devices connect to: the key the operator registered (the
+      // node list's), not the oracle's work key in its index
+      const reg = attach(deployment.registry, provider)
+      for (const n of near) {
+        const r = await reg.nodes(n.operator)
+        if (!r.active) continue
+        node = r.dhtKey.slice(2)
+        log(`nearest oracle of epoch ${x}: node ${node.slice(0, 12)}…, ${Math.round(n.km)} km away (of ${near.map((m) => Math.round(m.km) + ' km').join(', ')})`)
+        break
+      }
+      if (node) break
+    }
+    if (!node) log('no oracle\'s index found: the station takes any listed node (give --node to choose)')
+  }
   console.log('Type this on the station\'s console:\n')
-  console.log(`depin set ${deployment.netKey} ${cell} ${payee} ${deployment.start} ${config.epoch.length / config.epoch.slots} ${config.readings.topic}${rated ? ' ' + Math.floor(rated) : ''}`)
+  console.log(`depin set ${deployment.netKey} ${cell} ${payee} ${deployment.start} ${config.epoch.length / config.epoch.slots} ${config.readings.topic}${rated ? ' ' + Math.floor(rated) : ''}${node ? ' ' + node : ''}`)
 } else if (cmd === 'status') {
   const dir = dirOf()
   const config = checkConfig(read(dir, 'config.json'))

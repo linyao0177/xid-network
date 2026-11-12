@@ -11,12 +11,14 @@
 //
 // which prints one line to type on its console:
 //
-//   depin set <network key> <cell> <payee> <start> <slot seconds> <topic> [rated W]
+//   depin set <network key> <cell> <payee> <start> <slot seconds> <topic> [rated W] [node]
 //   depin show       the settings, the slot and what it did so far
 //   depin beacon     the beacon it sends in this slot (signed), as JSON
 //   depin off        a plain device again
 //
-// The device restarts to use new settings.
+// node: the oracle node nearest to it (xid-depin station picks it), which it
+// dials first, so the oracles' pings take a short way to it. The device
+// restarts to use new settings.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,14 +47,30 @@
 static char line_set[400]; // what `depin set` saved, without "depin set "
 static boat_depin_config_t station;
 static bool configured;
-static char net[65], cell[24], payee[43], topic[48];
+static char net[65], cell[24], payee[43], topic[48], node[65];
 
-// "<net> <cell> <payee> <start> <slot> <topic> [rated]" into station
+static bool
+is_hex (const char *s, size_t len) {
+  if (strlen(s) != len) return false;
+  for (; *s; s++)
+    if (!((*s >= '0' && *s <= '9') || (*s >= 'a' && *s <= 'f'))) return false;
+  return true;
+}
+
+// "<net> <cell> <payee> <start> <slot> <topic> [rated] [node]" into station
 static bool
 parse (const char *s) {
-  char start[24], slot[16], rated[16] = "0";
-  int n = sscanf(s, "%64s %23s %42s %23s %15s %47s %15s", net, cell, payee, start, slot, topic, rated);
+  char start[24], slot[16], rated[16] = "0", x[2][68] = { "", "" };
+  int n = sscanf(s, "%64s %23s %42s %23s %15s %47s %67s %67s", net, cell, payee, start, slot, topic, x[0], x[1]);
   if (n < 6) return false;
+  node[0] = 0;
+  for (int i = 0; i < 2; i++) { // the extras: a number (rated W) or a key (node)
+    if (!x[i][0]) continue;
+    size_t len = strlen(x[i]);
+    if (is_hex(x[i], 64)) memcpy(node, x[i], 65);
+    else if (strspn(x[i], "0123456789") == len && len < sizeof(rated)) memcpy(rated, x[i], len + 1);
+    else return false;
+  }
   station = (boat_depin_config_t) {
     .net = net,
     .cell = cell,
@@ -81,10 +99,11 @@ show (void) {
   boat_depin_get_stats(&st);
   printf("DEPIN|device %s\n", boat_device_key() ? boat_device_key() : "(not started)");
   if (!configured) {
-    printf("DEPIN|not a station yet: depin set <network key> <cell> <payee> <start> <slot seconds> <topic> [rated W]\n");
+    printf("DEPIN|not a station yet: depin set <network key> <cell> <payee> <start> <slot seconds> <topic> [rated W] [node]\n");
     return;
   }
   printf("DEPIN|network %s cell %s payee %s topic %s slot %lld of %lu s\n", net, cell, payee, topic, (long long) boat_depin_slot(), (unsigned long) station.slot_seconds);
+  printf("DEPIN|node %s\n", node[0] ? node : "(any listed)");
   printf("DEPIN|stats joins=%lu pongs=%lu readings=%lu beacons_sent=%lu beacons_heard=%lu beacons_bad=%lu witness=%lu\n", (unsigned long) st.joins, (unsigned long) st.pongs, (unsigned long) st.readings,
          (unsigned long) st.beacons_sent, (unsigned long) st.beacons_heard, (unsigned long) st.beacons_bad, (unsigned long) st.witness_reports);
 }
@@ -120,7 +139,7 @@ on_line (const char *line, void *ctx) {
     boat_depin_config_t keep = station;
     if (strlen(v) >= sizeof(line_set) || !parse(v)) {
       station = keep;
-      printf("DEPIN|error: depin set <network key> <cell> <payee> <start> <slot seconds> <topic> [rated W]\n");
+      printf("DEPIN|error: depin set <network key> <cell> <payee> <start> <slot seconds> <topic> [rated W] [node]\n");
       return;
     }
     save(v);
@@ -138,9 +157,9 @@ on_message (const char *from, const char *what, const uint8_t *data, size_t len,
 }
 
 static void
-on_connected (const char *node, void *ctx) {
+on_connected (const char *on, void *ctx) {
   (void) ctx;
-  printf("DEPIN|on node %.16s...\n", node);
+  printf("DEPIN|on node %.16s...%s\n", on, !node[0] ? "" : strcmp(on, node) == 0 ? " (the one near it)" : " (not the one near it: it was not listed or did not answer)");
   boat_depin_connected();
 }
 
@@ -203,6 +222,7 @@ app_main (void) {
     .nvs_namespace = DEVICE_NS,
     .network = CONFIG_BOAT_NETWORK[0] ? CONFIG_BOAT_NETWORK : NULL,
     .verifiers = CONFIG_BOAT_VERIFIERS[0] ? CONFIG_BOAT_VERIFIERS : NULL,
+    .node = configured && node[0] ? node : NULL, // near it: short round trips to the oracles
     .on_message = on_message,
     .on_connected = on_connected,
   };

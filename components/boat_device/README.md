@@ -18,7 +18,7 @@ boat_device_publish_sealed("telemetry", json, len);  // signed, and readable onl
 What it does for the device:
 
 - **Identity.** An Ed25519 key pair from a seed in NVS, made on first boot. The public key is the device's HyperDHT address, its MQTT identity and its DID (`did:mw:<key>`).
-- **Nodes.** It connects to the staked nodes that a quorum of its trusted verifiers lists ([`hdht_mqtt`](https://github.com/linyao0177/hyperdht-esp32/tree/main/components/hdht_mqtt) node list, from hyperdht-esp32), else to the nodes announced under a network name. It moves to another node when one goes away, and names the node it is on in its DID record.
+- **Nodes.** It connects to the staked nodes that a quorum of its trusted verifiers lists ([`hdht_mqtt`](https://github.com/linyao0177/hyperdht-esp32/tree/main/components/hdht_mqtt) node list, from hyperdht-esp32), else to the nodes announced under a network name. It moves to another node when one goes away, and names the node it is on in its DID record. With `.node` (a node's key, hex) it dials that node first whenever the list has it, to stay on a node near it.
 - **Messages.** Every publish is signed, with a sequence number that rises across reboots (one counter for all of the device's messages).
 - **Inbox.** What others publish to `d/<them>/to/<device>/<what>` reaches `on_message` with the sender's key, which the node checked.
 - **Receipts.** The node's signed word on what it got is checked on the device (`boat_device_get_stats`).

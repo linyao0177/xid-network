@@ -22,3 +22,10 @@ CONFIG_MQTT_TRANSPORT_WEBSOCKET=n
 # boards with native USB. On a board whose USB goes to a USB-UART chip, use
 # CONFIG_ESP_CONSOLE_UART_DEFAULT instead: Improv follows the console.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Oracles time their pings to the station: a round trip bounds where it is.
+# With A-MPDU receive on, the station's Wi-Fi held arriving frames for about
+# 150 ms (a block-ack reorder wait), and every round trip with them: 240 ms
+# against 55 ms of network. Off, the pings took 77-90 ms. Downloads (OTA) are
+# a little slower.
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n

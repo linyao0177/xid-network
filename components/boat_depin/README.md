@@ -52,6 +52,14 @@ so the clock must be right: run SNTP before it. Keep Wi-Fi awake
 beacons. Stations hear each other only on the same channel, which is that of
 the access point each is on.
 
+Round trips are evidence, so keep them short:
+- Put the device on the network's oracle nearest to it (`boat_device`'s
+  `.node`; `xid-depin station` names it). Every oracle's ping goes through
+  the device's node.
+- Turn off Wi-Fi A-MPDU receive (`CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n`). With
+  it on, an ESP32-C3 held arriving frames for about 150 ms. Its pongs then
+  took 240 ms over a 55 ms network; with it off, 77–90 ms.
+
 `boat_depin_beacon_json` gives the beacon of the slot now as JSON, to check
 the signature off the radio. See
 [`examples/depin_station`](../../examples/depin_station).
