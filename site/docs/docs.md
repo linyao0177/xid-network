@@ -636,6 +636,8 @@ curl -fsSL https://iot.xid.network/dl/node/install.sh | sudo sh -s -- \
 
 The whole system in pictures, from the layers down to single steps. The last four are scenes: pick a step, or walk through them with the arrows.
 
+One thing drawn here is not on the public testnet yet: the audit of who signed a settlement (step 6 of a job, the last step of settlement, and the "unassigned" fault under slashing). It comes with the next release of the node.
+
 Every message a device sends starts the same way:
 
 ![A signed message: 74 bytes ahead of the reading. Anyone checks it against the key in the topic, whichever node carried it](fig:message)
