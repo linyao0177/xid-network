@@ -2,7 +2,7 @@
 # boat-ota come from the third_party/hyperdht-esp32 submodule):
 #
 #   docker build -f packages/boat-registry/deploy/Dockerfile -t boat-node .
-#   docker run --rm -v boat-node:/data boat-node init /data --testnet
+#   docker run --rm -v boat-node:/data boat-node init /data --testnet [--depin lat,lon]
 #   docker run -d --name boat-node --network host --restart unless-stopped -v boat-node:/data boat-node
 #
 # HyperDHT holepunches over UDP: host networking keeps the node reachable
@@ -18,7 +18,9 @@ COPY third_party/hyperdht-esp32/packages/boat-ota third_party/hyperdht-esp32/pac
 COPY third_party/hyperdht-esp32/packages/boat-peer third_party/hyperdht-esp32/packages/boat-peer
 COPY packages/boat-mqtt-node packages/boat-mqtt-node
 COPY packages/boat-registry packages/boat-registry
-RUN for p in third_party/hyperdht-esp32/packages/boat-ota third_party/hyperdht-esp32/packages/boat-peer packages/boat-mqtt-node packages/boat-registry; do (cd $p && rm -rf node_modules && npm install --omit=dev --no-audit --no-fund); done
+COPY packages/xid-depin packages/xid-depin
+RUN for p in third_party/hyperdht-esp32/packages/boat-ota third_party/hyperdht-esp32/packages/boat-peer packages/boat-mqtt-node packages/boat-registry packages/xid-depin; do (cd $p && rm -rf node_modules && npm install --omit=dev --no-audit --no-fund); done \
+ && ln -s ../../xid-depin packages/boat-registry/node_modules/xid-depin
 USER boat
 VOLUME /data
 ENTRYPOINT ["node", "/app/packages/boat-registry/bin/boat-node.js"]

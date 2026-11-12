@@ -3,6 +3,7 @@
 #
 #   tools/release/pack-nodes.sh <base> [out-dir]     (default dist/node)
 #   npm install -g <base>/boat-registry-<version>.tgz    # gives boat-node
+#   npm install -g <base>/xid-depin-<version>.tgz        # xid-depin, and the oracle plugin
 #
 # The packages depend on each other through file: paths in the repository;
 # in the tarballs those become <base>/<name>-<version>.tgz, so <base> is
@@ -13,12 +14,12 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 BASE=${1:?usage: pack-nodes.sh <base url or file:/dir> [out-dir]}
 BASE=${BASE%/}
 OUT=$(mkdir -p "${2:-$ROOT/dist/node}" && cd "${2:-$ROOT/dist/node}" && pwd)
-find "$OUT" -maxdepth 1 -name 'boat-*.tgz' -delete
+find "$OUT" -maxdepth 1 \( -name 'boat-*.tgz' -o -name 'xid-*.tgz' \) -delete
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
 # boat-peer and boat-ota are hyperdht-esp32's (third_party/hyperdht-esp32)
-for p in boat-peer boat-ota boat-mqtt-node boat-registry; do
+for p in boat-peer boat-ota boat-mqtt-node boat-registry xid-depin; do
   src=$ROOT/packages/$p
   [ -d "$src" ] || src=$ROOT/third_party/hyperdht-esp32/packages/$p
   # only what the package's "files" names, as npm pack would take it

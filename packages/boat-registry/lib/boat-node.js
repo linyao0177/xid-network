@@ -42,7 +42,7 @@ export class BoatNode extends EventEmitter {
     dht, bootstrap, seed, operator, registry, roles = null, stake = null, autoRegister = false,
     storage = './boat-node', network, maxJobs = 20, jobPollMs = 15000, listMs = 300000,
     settleDelayMs = 5000, backupMs = 20000, rewardMs = 600000, autoWithdraw = true, statusFile = null,
-    spotters = 2, spotEvery = 10, lie = null, drop = null, reads = null, readPrice = null, metricsPort = null, spare = null, watchers = 3,
+    spotters = 2, spotEvery = 10, plugins = null, lie = null, drop = null, reads = null, readPrice = null, metricsPort = null, spare = null, watchers = 3,
     overloadMs = 2000, loadCheckMs = 60000, fromBlock = null
   }) {
     super()
@@ -87,6 +87,11 @@ export class BoatNode extends EventEmitter {
     this._following = new Set()
     this.waiting = new Map() // id -> job not taken (yet)
     this.lie = lie || {}
+    // job kinds run by plugins (xid-depin): [{ name, spec, createWorker({ node, job }) }].
+    // A worker is an EventEmitter like Worker: take(), published(), stored(),
+    // peer(from, topic, payload), close(); it emits 'signed' with work
+    // messages to settle, 'log' and 'error'
+    this.plugins = plugins || []
     this.drop = drop // tests: (topic, payload) => true to lose a reading on the way // tests: { compute|verify|store: (result, detail, unit) => ({ result, detail }) }
     this.keyPair = HyperDHT.keyPair(this.seed)
     this.keys = { store: roleKeyPair(this.seed, 'store'), verify: roleKeyPair(this.seed, 'verify'), work: roleKeyPair(this.seed, 'work') }
@@ -436,6 +441,9 @@ export class BoatNode extends EventEmitter {
       } catch (err) {
         this.log(`job ${id}: cannot follow its device yet (${err.message}); retrying`)
         this.jobs.delete(id)
+        // a plugin's worker runs on its own (timers): stopped, or two of them
+        // would work on the job, and could sign one unit twice
+        for (const w of this.workers.get(id) || []) if (w.close) await w.close().catch(() => {})
         this.workers.delete(id)
         this.waiting.set(id, job) // the next poll tries this job again
         continue
@@ -687,6 +695,21 @@ export class BoatNode extends EventEmitter {
   async ensureWorkers (job) {
     if (this.workers.has(job.id)) return true
     const id = job.id
+    const plugin = this.plugins.find((p) => p.spec === job.spec)
+    if (plugin) {
+      if (!(this.roles & job.role) || !(await this.assigned(job, job.role))) return false
+      const w = await plugin.createWorker({ node: this, job })
+      w.on('signed', (m) => {
+        if (!m) return
+        this.emit('signed', m)
+        this.settler.add(m, { own: true }).catch((err) => this.log('settle: ' + err.message))
+        if (this.watch) this.watch.work(m).catch(() => {})
+      })
+      w.on('log', (line) => this.log(`${plugin.name} job ${id}: ${line}`))
+      w.on('error', (err) => this.log(`${plugin.name} job ${id}: ${err.shortMessage || err.message}`))
+      this.workers.set(id, [w])
+      return true
+    }
     // forward jobs: the device's node signs what it forwarded, assigned verifiers witness it
     const modes = []
     if (job.role === ROLES.FORWARD) {
@@ -763,6 +786,8 @@ export class BoatNode extends EventEmitter {
       // (and statements for a job this node left with batches still open)
       if (this.workers.has(w.job) || (w.kind === 'batch' && this.settler.hasOpenBatches(w.job))) await this.settler.add(w).catch(() => {})
       if (this.watch) await this.watch.work(w).catch((err) => this.log('watch: ' + err.message))
+    } else if (kind === 'depin') {
+      for (const w of this.allWorkers()) if (w.peer) w.peer(from, topic, payload)
     } else if (kind === 'faults' && this.watch) {
       await this.watch.peer(from, topic, payload).catch((err) => this.log('watch: ' + err.message))
     }
@@ -797,7 +822,7 @@ export class BoatNode extends EventEmitter {
         const r = (a[ROLE_NAME[w.job.role]] ||= { workers: 0, signed: 0, taken: 0, refused: 0, dropped: 0, short: 0, open: 0 })
         r.workers++
         r.signed += w.signedCount
-        r.open += w.units.size
+        r.open += w.units?.size || 0 // (plugin workers keep no units)
         for (const [k, v] of Object.entries(w.counts || {})) r[k] += v
         return a
       }, {}),
@@ -821,6 +846,7 @@ export class BoatNode extends EventEmitter {
     this.loopDelay?.disable()
     this.metricsServer?.close()
     this.settler?.close()
+    for (const w of this.allWorkers()) if (w.close) await w.close().catch(() => {})
     await this.follower?.close()
     await this.store?.close()
     await this.forward?.close()

@@ -3,6 +3,7 @@
 //
 //   boat-node init <dir> [--testnet] [--roles forward,store,verify,compute] [--rpc url]
 //       [--registry 0x..] [--network name] [--from-block n] [--reads 0x..]
+//       [--depin lat,lon] (an oracle of DePIN networks: the xid-depin plugin)
 //       makes <dir>/node.json, a seed and an operator key (mode 600) and
 //       prints the operator's address: fund it with gas and the stake token
 //   boat-node run <dir>        registers when needed, then works
@@ -17,7 +18,9 @@
 //   (spare workers, the plan's block) is the registry's, the same for every
 //   node,
 //   reads: <BoatReads address>, readPrice: <per block> (a store sells reads),
-//   metricsPort: <port> (Prometheus metrics on 127.0.0.1) }
+//   metricsPort: <port> (Prometheus metrics on 127.0.0.1),
+//   plugins: { "xid-depin": { "lat": .., "lon": .. } } (modules that run more
+//   kinds of jobs: xid-depin makes the node an oracle of DePIN networks) }
 // testLie: "compute" makes the node sign bills three times too high, to see
 // the other nodes slash it (tests only: it loses its stake).
 // The seed is the node's HyperDHT identity (its forwarding key and, derived
@@ -73,6 +76,11 @@ if (cmd === 'init') {
     const fromBlock = opt('from-block', net.block ?? null)
     if (fromBlock !== null) config.fromBlock = Number(fromBlock)
     if (opt('reads', net.reads)) config.reads = opt('reads', net.reads)
+    if (opt('depin')) {
+      const [lat, lon] = opt('depin').split(',').map(Number)
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) usage()
+      config.plugins = { 'xid-depin': { lat, lon } }
+    }
     fs.writeFileSync(file('node.json'), JSON.stringify(config, null, 2) + '\n')
   }
   const seed = Buffer.from(secret('seed', () => crypto.randomBytes(32).toString('hex')), 'hex')
@@ -109,7 +117,20 @@ if (cmd === 'status') {
 }
 
 if (cmd !== 'run') usage()
+// plugins: { "<module>": { ...options } }, modules that run kinds of jobs
+// (xid-depin: DePIN networks' oracles; options lat, lon: where the node is)
+const plugins = []
+for (const [name, opts] of Object.entries(config.plugins || {})) {
+  try {
+    const mod = await import(name)
+    plugins.push(await mod.plugin(opts || {}))
+    log(`plugin ${name}`)
+  } catch (err) {
+    log(`plugin ${name} not loaded: ${err.message}`)
+  }
+}
 const node = new BoatNode({
+  plugins,
   bootstrap: config.bootstrap,
   seed,
   operator,

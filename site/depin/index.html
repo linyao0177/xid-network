@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xid DePIN</title>
+<meta name="description" content="DePIN networks on the xid network: reward curves, proof of location and proof of coverage as templates, scored by the network's nodes and paid on chain. The testnet's weather demo, live.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%232f54ff' stroke-width='5'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%232f54ff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@700;800&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --bg: #ffffff; --side: #f6f7fb; --ink: #12152e; --mute: #5b5f78; --line: #e4e5ee;
+  --accent: #2f54ff; --accent-soft: rgba(47, 84, 255, 0.08); --good: #12805c; --bad: #c4332b;
+  --code-bg: #0f1226; --code-ink: #dfe3f5;
+  --display: "Unbounded", "Arial Black", Arial, sans-serif;
+  --body: "Manrope", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1124; --side: #12162d; --ink: #eceef8; --mute: #a3a8c6; --line: #252a49;
+    --accent: #7b93ff; --accent-soft: rgba(123, 147, 255, 0.12); --good: #4cc79a; --bad: #ff7a70; --code-bg: #080a18;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1124; --side: #12162d; --ink: #eceef8; --mute: #a3a8c6; --line: #252a49;
+  --accent: #7b93ff; --accent-soft: rgba(123, 147, 255, 0.12); --good: #4cc79a; --bad: #ff7a70; --code-bg: #080a18;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--body); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.bar { position: sticky; top: 0; z-index: 5; height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.brand { font: 800 18px var(--display); color: var(--ink); display: flex; align-items: center; gap: 10px; }
+.brand i { width: 18px; height: 18px; border-radius: 50%; border: 4px solid var(--accent); display: inline-block; }
+.brand span { color: var(--accent); }
+.bar nav { display: flex; gap: 20px; font-size: 14px; font-weight: 600; }
+.bar nav a { color: var(--mute); }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 32px 24px 80px; }
+h1 { font: 800 clamp(28px, 5vw, 40px)/1.15 var(--display); margin: 0 0 8px; letter-spacing: -0.01em; }
+h2 { font: 700 20px/1.3 var(--display); margin: 48px 0 14px; }
+.lede { color: var(--mute); margin: 0 0 6px; max-width: 760px; }
+.status { font-size: 14px; color: var(--mute); display: flex; gap: 8px; align-items: baseline; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mute); display: inline-block; flex: none; }
+.dot.on { background: var(--good); }
+.dot.off { background: var(--bad); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 24px; }
+.tile { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--side); }
+.tile b { display: block; font: 700 28px/1.2 var(--display); font-variant-numeric: tabular-nums; }
+.tile span { color: var(--mute); font-size: 13px; font-weight: 600; }
+.chart { border: 1px solid var(--line); border-radius: 12px; padding: 16px 16px 8px; }
+.chart svg { width: 100%; height: 160px; display: block; }
+.chart .axis { display: flex; justify-content: space-between; color: var(--mute); font-size: 12px; margin-top: 4px; }
+.table { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--mute); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--side); }
+tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; text-align: right; }
+th.num { text-align: right; }
+code, .mono { font-family: var(--mono); font-size: 13px; }
+.reading { max-width: 280px; overflow: hidden; text-overflow: ellipsis; color: var(--mute); }
+.empty { color: var(--mute); padding: 18px; }
+.join { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card { border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.card h3 { margin: 0; font: 700 16px var(--display); }
+.card p { margin: 0; color: var(--mute); font-size: 14px; }
+pre { margin: 0; background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 12px; overflow-x: auto; font: 12.5px/1.6 var(--mono); }
+form { display: flex; gap: 8px; flex-wrap: wrap; }
+input { flex: 1 1 220px; min-width: 0; font: 13px var(--mono); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+button { font: 700 14px var(--body); padding: 10px 16px; border-radius: 8px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+button:disabled { opacity: 0.6; cursor: default; }
+.msg { font-size: 13px; color: var(--mute); min-height: 1.2em; word-break: break-all; }
+.msg.ok { color: var(--good); }
+.msg.err { color: var(--bad); }
+.filter { margin: 0 0 10px; }
+.contracts { font-size: 14px; color: var(--mute); display: grid; gap: 4px; }
+footer { margin-top: 56px; color: var(--mute); font-size: 13px; }
+@media (max-width: 600px) {
+  .bar { padding: 0 16px; }
+  .bar nav { gap: 14px; }
+  .wrap { padding: 24px 16px 64px; }
+}
+
+.steps { counter-reset: s; list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.steps li { counter-increment: s; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; font-size: 14px; color: var(--mute); }
+.steps li::before { content: counter(s); display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font: 700 13px var(--display); margin-bottom: 6px; }
+.steps li b { display: block; color: var(--ink); font-size: 15px; margin-bottom: 2px; }
+.map { border: 1px solid var(--line); border-radius: 12px; padding: 8px; background: var(--side); }
+.map svg { width: 100%; height: auto; display: block; }
+.legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--mute); margin-top: 8px; padding: 0 8px 4px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.ok { color: var(--good); }
+.no { color: var(--bad); }
+.bar-cell { display: inline-block; width: 64px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; margin-right: 6px; overflow: hidden; }
+.bar-cell span { display: block; height: 100%; background: var(--accent); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 14px; }
+.kv dt { color: var(--mute); }
+.kv dd { margin: 0; }
+</style>
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="/"><i></i>xid <span>DePIN</span></a>
+  <nav aria-label="Site">
+    <a href="/">Overview</a>
+    <a href="/network/">Testnet</a>
+    <a href="/docs/#depin">Docs</a>
+    <a href="https://github.com/linyao0177/xid-network/tree/main/packages/xid-depin" rel="noopener">GitHub</a>
+  </nav>
+</header>
+
+<main class="wrap">
+  <h1>DePIN on xid</h1>
+  <p class="lede">A network that rewards devices for sensing or serving somewhere (weather, air quality, energy) picks a template, changes what it needs and deploys. The xid network's compute nodes become its oracles: they score every epoch from what the devices signed, settle the rewards root on the registry and are paid for it. Devices claim with a Merkle proof.</p>
+  <p class="lede">Below: the testnet's own weather network, live. Sixteen simulated stations near the four testnet nodes; two of them claim places they are not.</p>
+  <div class="status" id="status"><span class="dot"></span><span>Loading…</span></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2>One epoch</h2>
+  <ol class="steps">
+    <li><b>Devices sign</b>Readings with a time, a join record naming their H3 cell and payee, beacons over the radio and the beacons they hear.</li>
+    <li><b>Oracles collect</b>The network's assigned compute nodes follow every enrolled device and time a signed ping each minute.</li>
+    <li><b>Sheets</b>After the epoch each oracle publishes what it holds on each device, and an index of it signed by its stake key.</li>
+    <li><b>Score</b>From all oracles' sheets: a message counts when most hold it. Location by round trips, coverage by witnesses, crowding by area.</li>
+    <li><b>Settle</b>A quorum signing the same root settles it on the registry; anyone publishes it on the network, within the curve's emission.</li>
+    <li><b>Claim</b>Anyone claims a device's reward for the payee it named, with a proof against the root.</li>
+  </ol>
+
+  <h2>Stations</h2>
+  <div class="map"><svg id="map" viewBox="0 0 720 300" role="img" aria-label="Where the stations say they are, and the oracles"></svg>
+    <div class="legend"><span><i style="background:var(--good)"></i>located</span><span><i style="background:var(--bad)"></i>ruled out</span><span><i style="background:var(--accent);border-radius:2px"></i>node (oracle)</span></div></div>
+  <p class="lede" id="latest-note" style="margin-top:12px"></p>
+  <div class="table"><table><thead><tr><th>Station</th><th>Says it is at</th><th>Location</th><th>Uptime</th><th>Good readings</th><th>Coverage</th><th class="num">Area share</th><th class="num">Reward</th></tr></thead><tbody id="stations"></tbody></table></div>
+
+  <h2>Epochs</h2>
+  <div class="table"><table><thead><tr><th class="num">Epoch</th><th>Began (UTC)</th><th>State</th><th class="num">Devices paid</th><th class="num">Paid out</th><th>Oracles</th></tr></thead><tbody id="epochs"></tbody></table></div>
+
+  <h2>The network</h2>
+  <div class="join">
+    <div class="card">
+      <h3>Rules</h3>
+      <dl class="kv" id="rules"></dl>
+    </div>
+    <div class="card">
+      <h3>Reward curve</h3>
+      <p id="curve-text"></p>
+      <div class="table"><table><thead><tr><th class="num">From epoch</th><th>About</th><th class="num">Per epoch</th></tr></thead><tbody id="schedule"></tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>Contracts</h3>
+      <div class="contracts" id="contracts"></div>
+    </div>
+  </div>
+
+  <h2>Take part</h2>
+  <div class="join">
+    <div class="card">
+      <h3>Add a station</h3>
+      <p>Simulated stations of this network wherever you say they are. The testnet pays their enrollment. Pick a home node near you; claim a place an oracle cannot reach that fast and the round trips rule it out.</p>
+      <pre>npm install -g https://iot.xid.network/dl/node/xid-depin-0.1.0.tgz
+xid-depin get ./wx
+xid-depin sim ./wx --home &lt;node key&gt; --stations "home@25.03,121.56"</pre>
+      <p>Node keys are on the <a href="/network/">testnet page</a> and in <a href="/testnet.json">testnet.json</a>.</p>
+    </div>
+    <div class="card">
+      <h3>Enroll a device</h3>
+      <p>A device of your own that publishes the readings, join record and pongs (<a href="/docs/#depin">the formats</a>): paste its key and the testnet enrolls it.</p>
+      <form id="enroll"><input name="device" placeholder="device key (64 hex digits)" autocomplete="off" spellcheck="false" aria-label="Device key"><button>Enroll</button></form>
+      <div class="msg" id="enroll-msg"></div>
+    </div>
+    <div class="card">
+      <h3>Start a network</h3>
+      <p>Weather, air quality or energy, as a template; your reward curve, your token, your rules. The network's oracles are the xid nodes, paid from a job budget your enrollment fees top up.</p>
+      <pre>xid-depin templates
+xid-depin new air-quality ./air --name my-air
+xid-depin deploy ./air --testnet --key admin.key --mint
+xid-depin keeper ./air --home &lt;node key&gt; --key admin.key --claim</pre>
+    </div>
+  </div>
+
+  <footer>Data from the testnet hub, pushed every 30 seconds. Anyone can score an epoch again from the oracles' published sheets: <code>xid-depin audit</code>.</footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+const short = (h, n = 10) => h ? esc(h.slice(0, n)) + '…' : ''
+const num = (x, d = 0) => Number(x).toLocaleString('en-US', { maximumFractionDigits: d })
+const tok = (wei, d = 0) => num(Number(BigInt(wei || '0') / 10n ** 14n) / 1e4, d)
+const pct = (bps) => `<span class="bar-cell"><span style="width:${(bps / 100).toFixed(0)}%"></span></span>${(bps / 100).toFixed(0)}%`
+const ago = (ms) => {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
+  return s < 60 ? s + ' s ago' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'
+}
+let explorer = 'https://testnet.arcscan.app'
+let nodes = []
+
+// equirectangular: lon -180..180, lat 75..-60
+const X = (lon) => ((lon + 180) / 360) * 720
+const Y = (lat) => ((75 - lat) / 135) * 300
+function drawMap (stations) {
+  let g = ''
+  for (let lon = -150; lon <= 150; lon += 30) g += `<line x1="${X(lon)}" y1="0" x2="${X(lon)}" y2="300" stroke="var(--line)" stroke-width="1"/>`
+  for (let lat = -45; lat <= 60; lat += 15) g += `<line x1="0" y1="${Y(lat)}" x2="720" y2="${Y(lat)}" stroke="var(--line)" stroke-width="${lat === 0 ? 1.5 : 1}"/>`
+  for (const n of nodes) {
+    if (!Number.isFinite(n.lat)) continue
+    g += `<rect x="${X(n.lon) - 5}" y="${Y(n.lat) - 5}" width="10" height="10" rx="2" fill="var(--accent)"><title>${esc(n.name)} (${esc(n.location)})</title></rect>`
+    g += `<text x="${X(n.lon) + 8}" y="${Y(n.lat) - 6}" font-size="11" fill="var(--mute)" font-family="var(--body)">${esc(n.name)}</text>`
+  }
+  for (const s of stations) {
+    if (!s.at) continue
+    const ok = s.location === 'ok'
+    g += `<circle cx="${X(s.at[1]).toFixed(1)}" cy="${Y(s.at[0]).toFixed(1)}" r="4.5" fill="${ok ? 'var(--good)' : 'var(--bad)'}" fill-opacity="0.85" stroke="var(--bg)" stroke-width="1"><title>${esc(s.did.slice(0, 12))}…: ${esc(s.location)}</title></circle>`
+  }
+  $('map').innerHTML = g
+}
+
+function render (snap, net) {
+  const d = net.depin
+  const fresh = Date.now() - net.at < 120000
+  if (!d || d.error) {
+    $('status').innerHTML = `<span class="dot off"></span><span>${d?.error ? 'The hub could not read the network: ' + esc(d.error) : 'The testnet runs no DePIN network yet.'}</span>`
+    return
+  }
+  const sym = d.symbol
+  const next = (d.start + (d.epoch + 1) * d.config.epoch.length) * 1000
+  $('status').innerHTML = `<span class="dot ${fresh ? 'on' : 'off'}"></span><span>${esc(d.config.title)} · epoch ${d.epoch}${Date.now() < d.start * 1000 ? ' starts ' + new Date(d.start * 1000).toISOString().slice(11, 16) + ' UTC' : ', next in ' + Math.max(0, Math.round((next - Date.now()) / 60000)) + ' min'} · updated ${ago(net.at)}</span>`
+  const published = d.epochs.filter((e) => e.published)
+  const located = d.stations.filter((s) => s.location === 'ok').length
+  $('tiles').innerHTML = [
+    [d.devices, 'stations enrolled'],
+    [d.stations.length ? `${located}/${d.stations.length}` : '–', 'located, last epoch'],
+    [published.length, 'epochs published (24 h)'],
+    [tok(d.emissionNow), `${sym} per epoch now`],
+    [tok(d.emitted), `${sym} paid out`],
+    [d.config.epoch.length / 60 + ' min', 'an epoch']
+  ].map(([v, l]) => `<div class="tile"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('')
+
+  drawMap(d.stations)
+  $('latest-note').textContent = d.latest !== null ? `Epoch ${d.latest}, as its oracles scored it.` : 'No epoch scored yet: the first is scored a minute or two after it ends.'
+  const rows = d.stations.slice().sort((a, b) => (b.location === 'ok') - (a.location === 'ok') || Number(BigInt(b.amount) - BigInt(a.amount)))
+  $('stations').innerHTML = rows.length ? rows.map((s) => `<tr>
+    <td class="mono" title="${esc(s.did)}">${short(s.did, 12)}</td>
+    <td class="mono">${s.at ? esc(s.at[0].toFixed(3) + ', ' + s.at[1].toFixed(3)) : '–'}</td>
+    <td class="${s.location === 'ok' ? 'ok' : 'no'}">${esc(s.location === 'ok' ? 'located' : s.location)}</td>
+    <td>${pct(s.uptime)}</td><td>${pct(s.quality)}</td><td>${pct(s.coverage)}</td>
+    <td class="num">${(s.share / 100).toFixed(0)}%</td>
+    <td class="num">${tok(s.amount, 1)} ${esc(sym)}</td></tr>`).join('') : '<tr><td class="empty" colspan="8">No epoch scored yet.</td></tr>'
+
+  $('epochs').innerHTML = d.epochs.length ? d.epochs.map((e) => `<tr>
+    <td class="num">${e.epoch}</td><td>${new Date(e.start * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
+    <td>${e.published ? '<span class="ok">published</span>' : '<span style="color:var(--mute)">not published</span>'}</td>
+    <td class="num">${e.published ? e.devices : '–'}</td><td class="num">${e.published ? tok(e.total) + ' ' + esc(sym) : '–'}</td>
+    <td>${e.oracles.length ? e.oracles.map((o) => `<a class="mono" href="${explorer}/address/${esc(o)}" rel="noopener">${short(o, 8)}</a>`).join(' ') : ''}</td></tr>`).join('') : '<tr><td class="empty" colspan="6">The first epoch has not ended yet.</td></tr>'
+
+  const c = d.config
+  const w = c.score.weights || {}
+  $('rules').innerHTML = [
+    ['Epoch', `${c.epoch.length / 60} min, ${c.epoch.slots} slots`],
+    ['Readings', Object.entries(c.readings.fields).map(([k, f]) => `${esc(k)} ${f.min}…${f.max}`).join(', ')],
+    ['Score', c.score.mode === 'uptime' ? `uptime ${w.uptime / 100}%, good readings ${w.quality / 100}%, coverage ${w.coverage / 100}%` : 'energy measured'],
+    ['Location', `H3 res ${c.location.resolution}; ruled out beyond ${c.location.kmPerMs} km per ms of round trip (+${c.location.slackKm} km)`],
+    ['Coverage', c.coverage.poc ? `a witness within ${c.coverage.poc.rangeCells} cells, ${c.coverage.poc.minWitnesses}+ per slot` : 'none'],
+    ['Crowding', c.coverage.hex ? `${c.coverage.hex.target} per res-${c.coverage.hex.resolution} area earn in full` : 'none']
+  ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')
+  const cv = c.curve
+  $('curve-text').textContent = cv.kind === 'halving' ? `Halving every ${cv.period} epochs, from ${tok(BigInt(String(cv.initial).replace(/e18$/, '')) * 10n ** 18n)} ${sym}.` : cv.kind
+  const hours = c.epoch.length / 3600
+  $('schedule').innerHTML = d.schedule.map((s) => `<tr><td class="num">${s.epoch}</td><td>${s.epoch === 0 ? 'start' : Math.round(s.epoch * hours / 24) < 1 ? Math.round(s.epoch * hours) + ' h' : Math.round(s.epoch * hours / 24) + ' days'}</td><td class="num">${tok(s.emission)} ${esc(sym)}</td></tr>`).join('')
+  $('contracts').innerHTML = `<div>Network <a class="mono" href="${explorer}/address/${esc(d.network)}" rel="noopener">${short(d.network, 18)}</a></div>
+    <div>${esc(sym)} (reward token) <a class="mono" href="${explorer}/address/${esc(d.token)}" rel="noopener">${short(d.token, 18)}</a></div>
+    <div>Oracles' job on the registry: #${esc(d.job)}</div>
+    <div>Network key <span class="mono">${short(d.netKey, 18)}</span></div>
+    <div>Config: <a href="/testnet.json">testnet.json</a> → depin</div>`
+}
+
+async function load () {
+  try {
+    const [res, t] = await Promise.all([fetch('/api/network', { cache: 'no-store' }), nodes.length ? null : fetch('/testnet.json').then((r) => r.json())])
+    if (t) nodes = t.nodes
+    if (!res.ok) throw new Error(res.status)
+    const net = await res.json()
+    if (net.testnet.explorer) explorer = net.testnet.explorer
+    render(null, net)
+  } catch (err) {
+    $('status').innerHTML = '<span class="dot off"></span><span>The hub has not reported yet. Try again in a minute.</span>'
+  }
+}
+
+const form = $('enroll')
+form.addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const msg = $('enroll-msg')
+  const btn = form.querySelector('button')
+  btn.disabled = true
+  msg.className = 'msg'
+  msg.textContent = 'Sending…'
+  try {
+    const res = await fetch('/api/depin/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device: form.elements.device.value.trim() }) })
+    const body = await res.json()
+    if (!res.ok || body.error) throw new Error(body.error || res.status)
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 4000))
+      const r = await (await fetch('/api/request/' + body.id, { cache: 'no-store' })).json()
+      if (r.state === 'done') { msg.className = 'msg ok'; msg.innerHTML = r.result.already ? 'Already enrolled.' : `Enrolled. <a href="${explorer}/tx/${esc(r.result.tx)}" rel="noopener">Transaction</a>`; break }
+      if (r.state === 'failed') { msg.className = 'msg err'; msg.textContent = 'Failed: ' + (r.result?.error || 'unknown'); break }
+      msg.textContent = `Request ${body.id}: ${r.state}…`
+    }
+  } catch (err) {
+    msg.className = 'msg err'
+    msg.textContent = err.message
+  } finally {
+    btn.disabled = false
+  }
+})
+
+load()
+setInterval(load, 30000)
+</script>
+</body>
+</html>

@@ -6,6 +6,8 @@
 //                              (stake and job budgets) and a little Arc USDC for gas
 //   POST /api/sponsor {device}   queue verify and store jobs for a device key, paid
 //                              by the testnet, so a new device's readings get worked on
+//   POST /api/depin/enroll {device}  queue a device's enrollment in the testnet's
+//                              DePIN network (the weather demo), fee paid by the testnet
 //   GET  /api/request/<id>     how a queued request went
 //
 // The hub (a VM running packages/boat-registry/examples/testnet-hub.js) holds
@@ -17,12 +19,14 @@
 //   POST /api/hub/done {id, ok, result}
 //
 // Limits per 24 hours: one faucet drip per address, three per client, 100 in
-// all; one sponsorship per device, five per client, 200 in all.
+// all; one sponsorship per device, five per client, 200 in all; one
+// enrollment per device, 20 per client, 300 in all.
 
 const DAY = 24 * 3600 * 1000
 const LIMITS = {
   faucet: { target: 1, ip: 3, all: 100 },
-  sponsor: { target: 1, ip: 5, all: 200 }
+  sponsor: { target: 1, ip: 5, all: 200 },
+  enroll: { target: 1, ip: 20, all: 300 }
 }
 
 const json = (body, status = 200, extra = {}) => new Response(JSON.stringify(body), {
@@ -92,6 +96,7 @@ export async function api (request, env) {
     }
     if (pathname === '/api/faucet' && method === 'POST') return await queue(request, env, 'faucet')
     if (pathname === '/api/sponsor' && method === 'POST') return await queue(request, env, 'sponsor')
+    if (pathname === '/api/depin/enroll' && method === 'POST') return await queue(request, env, 'enroll')
     const req = /^\/api\/request\/(\d+)$/.exec(pathname)
     if (req && method === 'GET') {
       const row = await env.DB.prepare('SELECT id, kind, target, state, result, at, done_at FROM requests WHERE id = ?').bind(Number(req[1])).first()

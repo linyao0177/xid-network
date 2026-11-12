@@ -21,6 +21,7 @@ Three simulated meters sign readings, the testnet sponsors verify and store jobs
 | Path | What it is |
 | --- | --- |
 | [`packages/boat-registry`](packages/boat-registry) | The contracts (registry: stake, jobs, Merkle-batch settlement, slashing; paid reads) and `boat-node`, the node: forward, store, verify and compute roles, the watchtower, the node list. Also `boat-sim`, `boat-deploy`, `boat-post-jobs` and the testnet hub |
+| [`packages/xid-depin`](packages/xid-depin) | A DePIN toolkit: reward curves, proof of location and proof of coverage as templates (weather, air quality, energy). A network is a contract and a job: the registry's compute nodes are its oracles, score each epoch and settle the rewards root |
 | [`packages/boat-mqtt-node`](packages/boat-mqtt-node) | MQTT over HyperDHT: the broker nodes run, signed messages, receipts, storage on Hypercore, sealed readings; `boat-watch` and `boat-read-store` for apps |
 | [`components/boat_device`](components/boat_device) | ESP-IDF component: a device on the network in a few calls (signed and sealed readings, receipts checked on the device, node list from trusted verifiers) |
 | [`components/boat_wifi`](components/boat_wifi) | Wi-Fi from NVS, set over Improv by the browser installer or on the console |

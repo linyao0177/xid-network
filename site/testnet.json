@@ -34,7 +34,9 @@
         "store",
         "verify",
         "compute"
-      ]
+      ],
+      "lat": 41.26,
+      "lon": -95.86
     },
     {
       "name": "xid-eu",
@@ -48,7 +50,9 @@
         "store",
         "verify",
         "compute"
-      ]
+      ],
+      "lat": 50.45,
+      "lon": 3.82
     },
     {
       "name": "xid-tw",
@@ -62,7 +66,9 @@
         "store",
         "verify",
         "compute"
-      ]
+      ],
+      "lat": 24.07,
+      "lon": 120.54
     },
     {
       "name": "xid-jp",
@@ -76,7 +82,95 @@
         "store",
         "verify",
         "compute"
-      ]
+      ],
+      "lat": 35.69,
+      "lon": 139.69
+    }
+  ],
+  "depin": [
+    {
+      "chainId": 5042002,
+      "rpc": "https://rpc.testnet.arc.network",
+      "registry": "0x26Ae7fCe8FBB4cAcE6778eC00a4EfFe785D83329",
+      "netKey": "a8d6fca8d50e7fd44436c20ab5440a5f1cc1b2ec7dcf3f8fbe95e2ec65c8e3e3",
+      "config": {
+        "v": 1,
+        "name": "xid-weather-demo",
+        "title": "xid weather demo",
+        "about": "The public testnet's DePIN network: simulated weather stations near the four testnet nodes, rewarded every hour for uptime, readings in range and radio coverage where they are.",
+        "epoch": {
+          "length": 3600,
+          "slots": 12
+        },
+        "curve": {
+          "kind": "halving",
+          "initial": "100000e18",
+          "period": 730
+        },
+        "token": {
+          "name": "xid Weather Demo",
+          "symbol": "WXD",
+          "mintable": true
+        },
+        "enroll": {
+          "fee": "1000000",
+          "maxDevices": 10000
+        },
+        "readings": {
+          "topic": "weather",
+          "fields": {
+            "t": {
+              "min": -600,
+              "max": 600,
+              "unit": "0.1 \u00b0C"
+            },
+            "h": {
+              "min": 0,
+              "max": 1000,
+              "unit": "0.1 %"
+            },
+            "p": {
+              "min": 8700,
+              "max": 10850,
+              "unit": "0.1 hPa"
+            }
+          }
+        },
+        "location": {
+          "resolution": 8,
+          "kmPerMs": 100,
+          "slackKm": 50,
+          "minViolations": 1
+        },
+        "coverage": {
+          "poc": {
+            "rangeCells": 6,
+            "minWitnesses": 1,
+            "maxWitnesses": 8,
+            "txDbm": 20,
+            "rssiMin": -100
+          },
+          "hex": {
+            "resolution": 7,
+            "target": 1
+          }
+        },
+        "score": {
+          "mode": "uptime",
+          "weights": {
+            "uptime": 6000,
+            "quality": 2500,
+            "coverage": 1500
+          }
+        }
+      },
+      "configHash": "0x147fcf5c90be0a1b14be02aba0004af0e19bbe9a32a58af769eaaa97dbb9f71b",
+      "network": "0x0ff2C98a0cCBa736F0E934B1CD3f717c571837b6",
+      "token": "0x673DA14397241cB6f35283C7CA0565b9c097B3B2",
+      "job": 16,
+      "block": 71900555,
+      "start": 1794412800,
+      "mintable": true
     }
   ]
 }

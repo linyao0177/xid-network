@@ -20,3 +20,5 @@ third_party/hyperdht-esp32/examples
 third_party/hyperdht-esp32/research
 third_party/hyperdht-esp32/apps
 third_party/hyperdht-esp32/tools
+packages/xid-depin/out
+packages/xid-depin/cache

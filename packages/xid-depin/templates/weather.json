@@ -1,0 +1,24 @@
+{
+  "v": 1,
+  "name": "weather",
+  "title": "Weather stations",
+  "about": "Stations that report temperature, humidity and pressure. Rewarded for uptime and readings within range, where they are, with one station per area earning in full.",
+  "epoch": { "length": 86400, "slots": 288 },
+  "curve": { "kind": "halving", "initial": "100000e18", "period": 730 },
+  "token": { "name": "Weather Reward", "symbol": "WXR", "mintable": true },
+  "enroll": { "fee": "1000000", "maxDevices": 10000 },
+  "readings": {
+    "topic": "weather",
+    "fields": {
+      "t": { "min": -600, "max": 600, "unit": "0.1 °C" },
+      "h": { "min": 0, "max": 1000, "unit": "0.1 %" },
+      "p": { "min": 8700, "max": 10850, "unit": "0.1 hPa" }
+    }
+  },
+  "location": { "resolution": 8, "kmPerMs": 100, "slackKm": 50, "minViolations": 1 },
+  "coverage": {
+    "poc": { "rangeCells": 6, "minWitnesses": 1, "maxWitnesses": 8, "txDbm": 20, "rssiMin": -100 },
+    "hex": { "resolution": 7, "target": 1 }
+  },
+  "score": { "mode": "uptime", "weights": { "uptime": 6000, "quality": 2500, "coverage": 1500 } }
+}

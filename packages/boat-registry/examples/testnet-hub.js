@@ -4,7 +4,7 @@
 // usage: boat-testnet-hub --key-file <hub wallet> --token-file <hub token>
 //        [--testnet https://iot.xid.network/testnet.json] [--api https://iot.xid.network]
 //        [--state hub-state.json] [--drip-gas 0.1] [--drip-token 1000000000]
-//        [--sponsor-units 500]
+//        [--sponsor-units 500] [--depin <dir> --depin-home <node key>]
 //
 // It follows the registry's events (nodes, jobs, settlements, slashes),
 // watches what devices publish on every public node, and every 30 s pushes
@@ -13,7 +13,11 @@
 //   faucet <address>: --drip-gas Arc USDC for gas and --drip-token of the
 //     test stake token (TSUSD, 6 decimals), enough to stake a node and pay jobs;
 //   sponsor <device>: verify and store jobs on the device's readings, paid by
-//     the hub in TSUSD (--sponsor-units units each, 1 TSUSD a unit).
+//     the hub in TSUSD (--sponsor-units units each, 1 TSUSD a unit);
+//   enroll <device>: enrolls the device in the testnet's DePIN network
+//     (--depin, run by xid-depin's lib/hub.js: it deploys the network, keeps
+//     its home record at --depin-home, claims its rewards, and the snapshot
+//     shows it).
 // The hub wallet pays the gas; the stake token mints for anyone. The key file
 // and the token never leave this machine and are never printed.
 
@@ -190,6 +194,14 @@ function watchNode (n) {
 }
 for (const n of testnet.nodes) watchNode(n)
 
+// ---- a DePIN network (xid-depin) ------------------------------------------------
+
+let depin = null
+if (opt('depin')) {
+  const { DepinHub } = await import('xid-depin/lib/hub.js')
+  depin = await new DepinHub({ dir: opt('depin'), wallet, provider, dht, registry, token, home: opt('depin-home', testnet.nodes[0].nodeKey), log, chainId: testnet.chainId, rpc: testnet.rpc }).start()
+}
+
 // ---- requests the site queued ---------------------------------------------------
 
 const hubCall = async (what, body) => {
@@ -226,7 +238,7 @@ async function serve () {
     const { requests } = await hubCall('take')
     for (const r of requests) {
       try {
-        const run = () => r.kind === 'faucet' ? faucet(r.target) : sponsor(r.target)
+        const run = () => r.kind === 'faucet' ? faucet(r.target) : r.kind === 'enroll' ? (depin ? depin.enroll(r.target) : Promise.reject(new Error('no DePIN network here'))) : sponsor(r.target)
         // once more after an error, with the nonce read from the chain again
         const result = await run().catch(async (err) => {
           log(`${r.kind} ${r.target.slice(0, 14)}…: ${err.error?.message || err.shortMessage || err.message}; trying again`)
@@ -310,7 +322,8 @@ async function snapshot () {
     devices: devs,
     hours,
     slashes: state.slashes.slice(-20),
-    faucet: { address: wallet.address, gas: formatEther(await provider.getBalance(wallet.address)) }
+    faucet: { address: wallet.address, gas: formatEther(await provider.getBalance(wallet.address)) },
+    depin: depin ? await depin.snapshot().catch((err) => ({ error: err.shortMessage || err.message })) : null
   }
   await hubCall('snapshot', JSON.stringify(body))
 }
@@ -325,4 +338,5 @@ const loop = (name, fn, ms) => {
 loop('chain', follow, 15000)
 loop('requests', serve, 10000)
 setTimeout(() => loop('snapshot', snapshot, 30000), 20000)
+if (depin) loop('depin', () => depin.round(), 120000)
 setInterval(() => log(`devices ${devices.size}, nodes online ${[...online.values()].filter((s) => s.connected).length}/${online.size}, units ${state.units}, txs ${state.txs}`), 300000)

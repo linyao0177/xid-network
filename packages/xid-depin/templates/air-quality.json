@@ -1,0 +1,25 @@
+{
+  "v": 1,
+  "name": "air-quality",
+  "title": "Air-quality sensors",
+  "about": "Sensors that report PM2.5, PM10 and CO2. A reading counts as good when it is within range and agrees with the other sensors around it; two sensors per area earn in full.",
+  "epoch": { "length": 86400, "slots": 96 },
+  "curve": { "kind": "exponential", "initial": "50000e18", "rate": "0.002e18", "floor": "5000e18" },
+  "token": { "name": "Air Reward", "symbol": "AIR", "mintable": true },
+  "enroll": { "fee": "1000000", "maxDevices": 10000 },
+  "readings": {
+    "topic": "air",
+    "fields": {
+      "pm25": { "min": 0, "max": 10000, "unit": "0.1 µg/m³" },
+      "pm10": { "min": 0, "max": 20000, "unit": "0.1 µg/m³" },
+      "co2": { "min": 300, "max": 10000, "unit": "ppm" }
+    },
+    "crossCheck": { "field": "pm25", "resolution": 6, "tolerance": 250, "min": 3 }
+  },
+  "location": { "resolution": 9, "kmPerMs": 100, "slackKm": 50, "minViolations": 1 },
+  "coverage": {
+    "poc": { "rangeCells": 8, "minWitnesses": 1, "maxWitnesses": 6, "txDbm": 20, "rssiMin": -100 },
+    "hex": { "resolution": 7, "target": 2 }
+  },
+  "score": { "mode": "uptime", "weights": { "uptime": 5000, "quality": 4000, "coverage": 1000 } }
+}

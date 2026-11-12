@@ -174,6 +174,7 @@ if (fs.existsSync(path.join(release, 'SHA256SUMS'))) {
 // (boat-node init --testnet reads it), and its live page
 fs.copyFileSync(path.join(here, 'testnet.json'), path.join(dist, 'testnet.json'))
 fs.cpSync(path.join(here, 'network'), path.join(dist, 'network'), { recursive: true })
+fs.cpSync(path.join(here, 'depin'), path.join(dist, 'depin'), { recursive: true })
 // /dl/ and /testnet.json are fetched from other pages too (the browser
 // installer on the docs artifact reads the manifests and images): open to any origin
 write('_headers', '/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: strict-origin-when-cross-origin\n/dl/*\n  Access-Control-Allow-Origin: *\n/testnet.json\n  Access-Control-Allow-Origin: *\n  Cache-Control: public, max-age=300\n')

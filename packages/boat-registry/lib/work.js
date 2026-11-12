@@ -35,7 +35,11 @@ const abi = AbiCoder.defaultAbiCoder()
 export const SPEC = {
   verify: keccak256(toUtf8Bytes('boat-verify/1')),
   store: keccak256(toUtf8Bytes('boat-store/1')),
-  forward: keccak256(toUtf8Bytes('boat-forward/1'))
+  forward: keccak256(toUtf8Bytes('boat-forward/1')),
+  // a DePIN network's epochs (packages/xid-depin): a compute job whose device
+  // is the network's key and whose units are its epochs. Nodes that run the
+  // xid-depin plugin work on it; the plan assigns it like any compute job
+  depin: keccak256(toUtf8Bytes('xid-depin/1'))
 }
 export const ROLE_NAME = { [ROLES.FORWARD]: 'forward', [ROLES.STORE]: 'store', [ROLES.VERIFY]: 'verify', [ROLES.COMPUTE]: 'compute' }
 
@@ -47,6 +51,8 @@ export const verifyJob = ({ window }) => ({ role: ROLES.VERIFY, spec: SPEC.verif
 export const storeJob = ({ window }) => ({ role: ROLES.STORE, spec: SPEC.store, params: { window } })
 // pays the node the device's messages go through, with verifiers as witnesses
 export const forwardJob = ({ window }) => ({ role: ROLES.FORWARD, spec: SPEC.forward, params: { window } })
+// scores a DePIN network's epochs (xid-depin): device = the network's key
+export const depinJob = ({ network, config }) => ({ role: ROLES.COMPUTE, spec: SPEC.depin, params: { window: 1, network, config } })
 
 // approves the budget and posts the job; returns its id. perEpoch: units
 // that may settle in one epoch (what a few bad nodes could take at most)
@@ -90,7 +96,7 @@ export async function readJob (registry, id) {
   }
   const problem = jobProblem(job.role, job.spec, params)
   if (problem) throw new Error(`job ${id}: ${problem}`)
-  if (job.role === ROLES.COMPUTE) {
+  if (job.role === ROLES.COMPUTE && job.spec !== SPEC.depin) {
     job.wasm = Buffer.from(params.wasm, 'hex')
     job.price = BigInt(params.price)
   }
@@ -102,7 +108,9 @@ export async function readJob (registry, id) {
 export function jobProblem (role, spec, params) {
   if (!params || typeof params !== 'object') return 'bad params'
   if (!Number.isInteger(params.window) || params.window < 1 || params.window > 1000) return 'bad window'
-  if (role === ROLES.COMPUTE) {
+  if (role === ROLES.COMPUTE && spec === SPEC.depin) {
+    if (params.window !== 1 || !addressOf(params.network) || !params.config || typeof params.config !== 'object') return 'bad DePIN params'
+  } else if (role === ROLES.COMPUTE) {
     if (typeof params.wasm !== 'string' || !/^([0-9a-fA-F]{2})*$/.test(params.wasm)) return 'bad WASM'
     if (keccak256(Buffer.from(params.wasm, 'hex')) !== spec) return 'the WASM is not the one its spec names'
     try { BigInt(params.price) } catch { return 'bad price' }

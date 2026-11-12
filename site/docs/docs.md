@@ -4,13 +4,14 @@ xid network is an open network for connected devices. Devices sign everything th
 
 ## Pick your path
 
-Three kinds of people use xid network. Find yours and go to its chapter. Anyone can join the [public testnet](#testnet) in a few minutes, with a board or without one, or run the whole network on one laptop in the [Quick Start](#quick-start).
+Four kinds of people use xid network. Find yours and go to its chapter. Anyone can join the [public testnet](#testnet) in a few minutes, with a board or without one, or run the whole network on one laptop in the [Quick Start](#quick-start).
 
 | You are | You want to | What you get | Read |
 | --- | --- | --- | --- |
 | A device maker | Ship devices whose data people can rely on | Devices with their own identity, no cloud account, no server to run | [For device makers](#for-device-makers) |
 | A node operator | Earn by running part of the network | Pay for every unit of work you and your peers agree on | [For node operators](#for-node-operators) |
 | An app or a buyer of data | Use device data and pay for it fairly | Data you can check yourself, paid only when nodes agree | [For apps and buyers](#for-apps-and-buyers) |
+| A DePIN project | Reward devices for sensing or serving somewhere: weather, air quality, energy | Reward curves, proof of location and proof of coverage as templates; the network's nodes as your oracles | [For DePIN networks](#depin) |
 
 ## How xid network works
 
@@ -531,6 +532,94 @@ A device can seal its readings so that only readers it names can open them. To b
 ### Check it yourself
 
 Every settled unit, every payment and every slash is on chain, and every result can be recomputed from the device's signed messages. `examples/snapshot.js` exports a network's nodes, jobs, settlements and slashes as data for your own dashboard.
+
+## For DePIN networks {#depin}
+
+Reward devices for what they sense or serve, and where, without running the oracles yourself. `xid-depin` turns a template into a network:
+- a contract that holds your reward curve and pays your devices;
+- a job on the registry that pays xid nodes to score each epoch.
+
+The testnet runs one: [the weather demo](/depin/).
+
+### What you get
+
+| Piece | What it does |
+| --- | --- |
+| Templates | Weather, air quality and energy networks: what a reading is, what is rewarded, the curve. Change what you need |
+| Reward curves | Constant, halving, exponential, linear or steps, with a floor and an end. The contract caps every epoch at the curve |
+| Proof of location | A device names its H3 cell in a record it signs. Oracles time a signed ping and rule out any cell further than light in fibre allows: 100 km per ms of round trip |
+| Proof of coverage | Devices beacon over the radio (ESP-NOW, BLE) and report what they hear. A witness counts when it is in range, the signal fits the distance, and it is paid to someone else |
+| Crowding | Devices that crowd one area share what a few would earn |
+| Oracles | The registry's compute nodes, assigned like any job, paid per epoch from your job's budget. Enrollment fees top it up |
+
+### Start a network
+
+```bash
+npm install -g https://iot.xid.network/dl/node/xid-depin-0.1.0.tgz
+xid-depin templates
+xid-depin new weather ./wx --name my-weather --epoch 86400
+# edit ./wx/config.json: fields, weights, curve, token
+xid-depin deploy ./wx --testnet --key admin.key --budget 100 --mint
+xid-depin keeper ./wx --home <a node key> --key admin.key --claim
+```
+
+- **`deploy`** puts three things on chain:
+    - the reward token, which the network mints as epochs are published;
+    - the network contract;
+    - the oracles' job.
+
+    The config's hash is fixed in the contract, and the job carries the config itself.
+- **`keeper`**:
+    - keeps the network's key pointing at a node, where its oracles meet;
+    - sends enrollment fees to the job;
+    - claims each epoch's rewards for the payees.
+
+### How an epoch is scored
+
+1. **Devices sign** readings with a time, a join record (where they are and who is paid), beacons and the beacons they hear.
+2. **Oracles collect.** The job's assigned nodes follow every enrolled device and time a signed ping to it each minute.
+3. **Oracles publish their sheets.** After the epoch, each oracle publishes what it holds on each device, and an index of it signed with its stake key.
+4. **Oracles score.**
+    - Each oracle scores from all the oracles' sheets. A message counts only when most of them hold it, so one oracle can neither add readings nor drop them.
+    - Each oracle signs the root of the rewards tree once.
+5. **The registry settles.** A quorum of the same root settles on the registry, and the oracles are paid.
+6. **Anyone publishes.** The contract checks the settled statement and the curve's cap.
+7. **Anyone claims** a device's reward with a Merkle proof. It goes to the device's payee.
+
+`xid-depin audit <dir> <epoch>` scores an epoch again from the published sheets and compares the root with the one on chain. An oracle that signs two roots for one epoch loses half its stake.
+
+### Devices
+
+A device in your network publishes these, signed with its own key:
+
+| Topic | What |
+| --- | --- |
+| `d/<device>/<readings topic>` | The config's fields as integers, and `ts` (unix seconds) |
+| `d/<device>/depin/<network key>/join` | Retained: `{ v: 1, net, cell, payee }`, where it is (an H3 cell) and who is paid |
+| `d/<device>/depin/<network key>/witness` | The beacons it heard in a slot, with their signal strength |
+| `d/<device>/depin/<network key>/pong` | `{ v: 1, nonce }`, its answer to an oracle's ping |
+
+`xid-depin sim` runs simulated devices of a network at the places you give, with a simulated radio between them. `lib/device.js` is the same in Node for gateways.
+
+```bash
+xid-depin get ./wx                   # the testnet's weather demo
+xid-depin sim ./wx --home <node key> --stations "roof@25.03,121.56;garden@25.031,121.563"
+```
+
+### Run an oracle
+
+Any node with the compute role becomes an oracle when the plan assigns it a network's job. Install it with the plugin, and say where the node is:
+
+```bash
+curl -fsSL https://iot.xid.network/dl/node/install.sh | sudo sh -s -- \
+  https://iot.xid.network/dl/node/boat-registry-0.1.0.tgz --testnet --depin 25.03,121.56
+```
+
+### Limits
+
+- **Location.** A round trip can rule a place out, never prove one. Within a few ms of an oracle, it is the radio witnesses that place devices relative to each other.
+- **Fake devices.** What stops one person from posing as many devices is keys kept in hardware, with a manufacturer's credential.
+- **Firmware.** `boat_device` does not yet answer pings or beacon over ESP-NOW. Today the toolkit runs on simulated devices and Node gateways.
 
 ## Reference
 

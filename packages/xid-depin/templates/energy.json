@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "name": "energy",
+  "title": "Solar and energy meters",
+  "about": "Meters that count the energy a solar panel or battery delivers. Rewarded for the energy measured in the epoch, no more than the rated power of the site allows.",
+  "epoch": { "length": 86400, "slots": 96 },
+  "curve": { "kind": "steps", "steps": [ { "until": 365, "amount": "20000e18" }, { "until": 1095, "amount": "10000e18" } ], "floor": "2000e18" },
+  "token": { "name": "Energy Reward", "symbol": "NRG", "mintable": true },
+  "enroll": { "fee": "1000000", "maxDevices": 10000 },
+  "readings": {
+    "topic": "telemetry",
+    "fields": {
+      "mwh": { "min": 0, "max": 9000000000000, "unit": "mWh, counting up" },
+      "w": { "min": 0, "max": 100000, "unit": "W" }
+    }
+  },
+  "location": { "resolution": 7, "kmPerMs": 100, "slackKm": 50, "minViolations": 1 },
+  "coverage": {},
+  "score": { "mode": "energy", "field": "mwh", "maxPowerW": 20000 }
+}

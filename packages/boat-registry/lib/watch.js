@@ -30,7 +30,7 @@ import { open, spotCheck } from 'boat-mqtt-node'
 import { ROLES, slashStatementOf, sortBySigner } from './registry.js'
 import { judgeMessage, VERDICT } from './verifier.js'
 import { runRule } from './compute.js'
-import { resultOf, signerOf, unitOf } from './work.js'
+import { resultOf, signerOf, unitOf, SPEC } from './work.js'
 import { keyIdOf } from 'boat-mqtt-node'
 
 const abi = AbiCoder.defaultAbiCoder()
@@ -122,6 +122,11 @@ export class Watchtower extends EventEmitter {
     if (!before) this.seen.set(k, w)
     if (this.seen.size > 20000) this.seen.delete(this.seen.keys().next().value)
     if (w.operator === this.operator.address) return
+    // a DePIN epoch: its result is the root of a score anyone can run again
+    // from the oracles' published sheets (xid-depin audit), not a rule run
+    // on one window, so the judgements below do not apply. (Two results for
+    // one epoch, above, still do.)
+    if (job.spec === SPEC.depin) return
     const watchers = await this.watchersOf(job.device)
     if (!watchers.includes(this.operator.address)) return
     this.stats.checked++

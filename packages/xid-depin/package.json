@@ -1,0 +1,24 @@
+{
+  "name": "xid-depin",
+  "version": "0.1.0",
+  "description": "A DePIN toolkit on the xid network: reward curves, proof of location and proof of coverage as templates, scored each epoch by the network's compute nodes and paid by a contract",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "lib", "bin", "artifacts", "contracts", "templates"],
+  "scripts": {
+    "build": "node scripts-build.mjs",
+    "test": "node test/curve.js && node test/score.js && node test/e2e.js",
+    "test:sol": "forge test"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "boat-mqtt-node": "file:../boat-mqtt-node",
+    "boat-registry": "file:../boat-registry",
+    "ethers": "6.17.0",
+    "h3-js": "4.2.1",
+    "hyperdht": "6.36.0"
+  },
+  "bin": {
+    "xid-depin": "bin/xid-depin.js"
+  }
+}
