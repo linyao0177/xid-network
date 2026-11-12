@@ -23,18 +23,22 @@
   --body: "Manrope", "Helvetica Neue", Arial, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --bar: 60px;
+  /* figures: nodes, what moves between them, what is refused */
+  --fig-node: #3a4064; --fig-flow: #d97706; --fig-bad: #d63a3a;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0e1124; --side: #12162d; --ink: #eceef8; --mute: #a3a8c6; --line: #252a49;
     --accent: #7b93ff; --accent-soft: rgba(123, 147, 255, 0.12);
     --code-bg: #080a18; --out-bg: #161a35; color-scheme: dark;
+    --fig-node: #b3b9dc; --fig-flow: #f2a444; --fig-bad: #ff7b72;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0e1124; --side: #12162d; --ink: #eceef8; --mute: #a3a8c6; --line: #252a49;
   --accent: #7b93ff; --accent-soft: rgba(123, 147, 255, 0.12);
   --code-bg: #080a18; --out-bg: #161a35; color-scheme: dark;
+    --fig-node: #b3b9dc; --fig-flow: #f2a444; --fig-bad: #ff7b72;
 }
 * { box-sizing: border-box; }
 html { scroll-padding-top: calc(var(--bar) + 16px); }
@@ -120,6 +124,76 @@ h2:hover .anchor, h3:hover .anchor { opacity: 1; }
 .fig img { display: block; width: 100%; height: auto; background: #ffffff; border: 1px solid var(--line); border-radius: 14px; padding: 10px; }
 .fig figcaption { font-size: 13px; color: var(--mute); margin-top: 8px; text-align: center; }
 
+/* the Architecture chapter's figures (docs/figures.mjs): drawn in the page's colours */
+.xfig { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.xscroll { overflow-x: auto; padding: 20px 16px 12px; }
+.xscroll svg { display: block; width: 100%; min-width: 620px; height: auto; }
+.xfig svg text { font-family: var(--body); text-anchor: middle; dominant-baseline: central; }
+.xfig .th { font-size: 13.5px; font-weight: 700; fill: var(--ink); }
+.xfig .ts { font-size: 11.5px; fill: var(--mute); }
+.xfig .tm { font-family: var(--mono); font-size: 10.5px; fill: var(--mute); letter-spacing: 0.1em; }
+.xfig .b { stroke-width: 1.5; }
+.xfig .b.d { fill: var(--side); stroke: var(--fig-node); }
+.xfig .b.c { fill: var(--accent-soft); stroke: var(--accent); }
+.xfig .b.x { fill: var(--bg); stroke: var(--line); }
+.xfig .grp, .xfig .lane { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 2 6; stroke-linecap: round; }
+.xfig .ar { stroke: var(--mute); stroke-width: 1.5; fill: none; }
+.xfig .fl { fill: none; stroke-width: 2.25; stroke-dasharray: 7 6; stroke-linecap: round; }
+.xfig .k-dev { stroke: var(--fig-node); } .xfig .k-link { stroke: var(--fig-flow); } .xfig .k-chain { stroke: var(--accent); } .xfig .k-bad { stroke: var(--fig-bad); }
+.xfig .f-dev { fill: var(--fig-node); } .xfig .f-link { fill: var(--fig-flow); } .xfig .f-chain { fill: var(--accent); } .xfig .f-muted { fill: var(--mute); }
+.xfig .ring { fill: none; stroke-width: 2.25; }
+.xfig .tube { fill: var(--side); stroke: var(--fig-node); stroke-width: 1.5; }
+.xfig .barframe { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.xfig .barframe.dev { stroke: var(--fig-node); }
+.xfig .xbar { transition: width .5s; }
+.xfig .st { opacity: 0; transition: opacity .35s; }
+.xfig .st.on { opacity: 1; }
+.xfig .dimmable { transition: opacity .35s; }
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes xflow { to { stroke-dashoffset: -26; } }
+  @keyframes xflowr { to { stroke-dashoffset: 26; } }
+  @keyframes xgo { 0% { transform: translateX(0); opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { transform: translateX(172px); opacity: 0; } }
+  @keyframes xback { 0% { transform: translateX(172px); opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { transform: translateX(0); opacity: 0; } }
+  .xfig .fl { animation: xflow 1s linear infinite; }
+  .xfig .fl.rv { animation-name: xflowr; }
+  .xfig .pk { animation: xgo 2s linear infinite; }
+  .xfig .rc { animation: xback 2s linear infinite; }
+}
+.xlegend { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 13px; color: var(--mute); padding: 0 16px 14px; }
+.xlegend span { display: inline-flex; align-items: center; gap: 7px; }
+.xlegend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.xlegend .l-dev, .xlegend .l-d { background: var(--fig-node); } .xlegend .l-link { background: var(--fig-flow); } .xlegend .l-chain, .xlegend .l-c { background: var(--accent); } .xlegend .l-bad { background: var(--fig-bad); } .xlegend .l-x { background: var(--line); }
+.xctl { border-top: 1px solid var(--line); background: var(--side); padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+.xtabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.xtabs button { font: 600 13px var(--body); color: var(--mute); background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+.xtabs button:hover { color: var(--ink); }
+.xtabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+.xsay { display: flex; gap: 14px; align-items: flex-start; }
+.xtxt { flex: 1; min-width: 0; }
+.xct { font-weight: 800; font-size: 17px; line-height: 1.3; margin-bottom: 4px; }
+.xcc { font-size: 15px; color: var(--mute); line-height: 1.6; min-height: 6.4em; }
+.xnav { display: flex; gap: 6px; flex: none; }
+.xnav button { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font-size: 15px; cursor: pointer; }
+.xnav button:hover { border-color: var(--accent); color: var(--accent); }
+.xfmt { display: flex; justify-content: center; flex-wrap: wrap; gap: 4px; font: 12px var(--mono); color: var(--mute); visibility: hidden; padding: 0 16px 12px; }
+.xfmt.on { visibility: visible; }
+.xfmt span { border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; background: var(--side); }
+.xfmt span.s { border-color: var(--accent); color: var(--accent); }
+.xbytes { display: flex; gap: 6px; min-width: 600px; padding: 4px 4px 8px; }
+.xseg { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.xseg .off { font: 11px var(--mono); color: var(--mute); }
+.xseg .box { border: 1.5px solid var(--fig-node); background: var(--side); border-radius: 8px; height: 56px; display: flex; align-items: center; justify-content: center; font: 500 14px var(--mono); padding: 0 8px; white-space: nowrap; }
+.xseg.sig .box { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.xseg .what { font-size: 13px; color: var(--mute); line-height: 1.4; }
+.xstack { display: grid; grid-template-columns: 1fr 30px 1fr; gap: 8px 0; padding: 20px 16px; }
+.xstack .hd { font-size: 12px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); text-align: center; padding-bottom: 4px; }
+.xstack .cell { border: 1.5px solid var(--fig-node); background: var(--side); border-radius: 8px; padding: 8px 10px; text-align: center; min-width: 0; }
+.xstack .cell.wire { border-color: var(--line); background: var(--bg); }
+.xstack .cell b { display: block; font: 500 13px var(--mono); overflow-wrap: anywhere; }
+.xstack .cell small { display: block; font-size: 12.5px; color: var(--mute); line-height: 1.4; }
+.xstack .peer { align-self: center; height: 0; border-top: 1.5px dashed var(--line); }
+.xstack .peer.real { border-top: 2.25px solid var(--fig-flow); }
+
 @media (max-width: 960px) {
   .menu { display: inline-block; }
   .bar nav a.opt { display: none; }
@@ -194,6 +268,24 @@ h2:hover .anchor, h3:hover .anchor { opacity: 1; }
   }
   window.addEventListener('scroll', onScroll, { passive: true })
   onScroll()
+
+  // the Architecture chapter's scenes: one step at a time (docs/figures.mjs)
+  document.querySelectorAll('.xfig[data-scene]').forEach((el) => {
+    const tabs = [...el.querySelectorAll('.xtabs button')]
+    const [prev, next] = el.querySelectorAll('.xnav button')
+    let i = 0
+    const show = () => {
+      el.querySelectorAll('[data-a]').forEach((g) => g.classList.toggle('on', i >= +g.dataset.a && i <= +g.dataset.b))
+      el.querySelectorAll('[data-wat]').forEach((r) => r.setAttribute('width', i >= +r.dataset.wat ? r.dataset.w1 : r.dataset.w0))
+      el.querySelectorAll('[data-dim]').forEach((g) => { g.style.opacity = i > +g.dataset.dim ? 0.25 : 1 })
+      tabs.forEach((t, k) => t.setAttribute('aria-selected', String(k === i)))
+      el.querySelector('.xct').textContent = tabs[i].dataset.title
+      el.querySelector('.xcc').textContent = tabs[i].dataset.text
+    }
+    tabs.forEach((t, k) => t.addEventListener('click', () => { i = k; show() }))
+    prev.addEventListener('click', () => { i = (i + tabs.length - 1) % tabs.length; show() })
+    next.addEventListener('click', () => { i = (i + 1) % tabs.length; show() })
+  })
 
   // the sidebar on narrow screens
   const menu = document.getElementById('menu')
