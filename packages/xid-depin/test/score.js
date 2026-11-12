@@ -17,7 +17,7 @@ import HyperDHT from 'hyperdht'
 import { sign } from 'boat-mqtt-node'
 import { scoreEpoch, claimOf } from '../lib/score.js'
 import { topics, signBeacon, hex } from '../lib/records.js'
-import { loadTemplate } from '../lib/config.js'
+import { loadTemplate, configProblem } from '../lib/config.js'
 import { cellAt } from '../lib/geo.js'
 import { verifyProof } from 'boat-registry/lib/merkle.js'
 
@@ -103,6 +103,17 @@ check('the same sheets give the same root', again.root === tree.root && again.to
 const c = claimOf(tree, devs.A.did)
 check('a claim proves against the root', verifyProof(tree.leaves.find((l) => l.did === devs.A.did).leaf, c.proof, tree.root))
 check('B (alone in its area) earns more than A', amt('B') > amt('A'), `A ${amt('A') / 10n ** 15n} B ${amt('B') / 10n ** 15n} (1e-3)`)
+
+// a round trip only rules places out: a device that answers slowly passes
+// anywhere, unless the network wants an oracle to have reached it quickly
+const slow = sheets.map((s) => ({ ...s, devices: { ...s.devices, [devs.D.did]: { ...s.devices[devs.D.did], rtt: 300 } } }))
+check('a device that answers slowly is not ruled out by round trips alone', scoreEpoch({ config, net, epoch, start, emission, devices, sheets: slow }).rows.find((r) => r.did === devs.D.did).location === 'ok')
+const strict = { ...config, location: { ...config.location, maxRttMs: 50 } }
+const st = scoreEpoch({ config: strict, net, epoch, start, emission, devices, sheets: slow })
+const srow = (n) => st.rows.find((r) => r.did === devs[n].did)
+check('with maxRttMs it is: no oracle near enough', srow('D').location === 'no oracle near enough' && BigInt(srow('D').amount) === 0n, srow('D').location)
+check('and devices an oracle reached in time stay located', srow('A').location === 'ok' && srow('E').location === 'ok')
+check('maxRttMs must be a sensible number', configProblem({ ...config, location: { ...config.location, maxRttMs: 0 } }) !== null && configProblem(strict) === null)
 
 // energy: a meter's steps, capped by its rated power
 const ec = loadTemplate('energy')
