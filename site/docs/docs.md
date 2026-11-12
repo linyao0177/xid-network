@@ -632,6 +632,75 @@ curl -fsSL https://iot.xid.network/dl/node/install.sh | sudo sh -s -- \
 - **Round trips from Wi-Fi boards.** An ESP32-C3 with Wi-Fi A-MPDU receive on held arriving frames for about 150 ms. Its pongs took 240 ms over a 55 ms network. `depin_station` turns it off: 77–90 ms. A round trip of 80 ms still allows 8,000 km; only stations close to an oracle are placed tightly.
 - **Radio witnesses on hardware.** The ESP32 station's beacons verify in JS, and it checks and reports what it hears. Two stations hearing each other over ESP-NOW has not been tested yet.
 
+## Architecture {#architecture}
+
+The whole system in pictures, from the layers down to single steps. The last four are scenes: pick a step, or walk through them with the arrows.
+
+One thing drawn here is not on the public testnet yet: the audit of who signed a settlement (step 6 of a job, the last step of settlement, and the "unassigned" fault under slashing). It comes with the next release of the node.
+
+Every message a device sends starts the same way:
+
+![A signed message: 74 bytes ahead of the reading. Anyone checks it against the key in the topic, whichever node carried it](fig:message)
+
+### The three layers
+
+Devices and apps never read the chain. Nodes coordinate off-chain. The chain holds only what needs one answer for everyone.
+
+![Devices and apps outside, staked nodes in four roles, three contracts](fig:layers)
+
+### A job, start to payout
+
+Eight steps, in four lanes by who does them.
+
+![A paid job from posting to withdrawal](fig:job)
+
+- **Step 2 is the hinge.** Assignment is not on chain: every node computes the same plan from the chain's events. So in step 5 the contract checks signatures and counts them, but not whether the signers were the assigned ones. The audit in step 6 closes that gap.
+- **Steps 6 and 7 race step 8.** Rewards mature an epoch later. Verifiers have until then to slash.
+
+### Device to node, layer by layer
+
+Each row is one protocol, spoken at both ends. Only the bottom row is on the wire.
+
+![The stack on an ESP32-C3 and on a node](fig:stack)
+
+- **No password, no certificate.** The node takes the key the handshake proved, wants the MQTT client id to start with it, and lets it publish only under `d/<its key>/`.
+- **Two layers of trust.** The encrypted stream protects one hop. A node is anyone's machine, so the payload carries the device's own signature as well.
+
+### How a reading travels
+
+The device knows keys, not addresses.
+
+![From a board behind a home router to the nodes that work on its data](fig:link)
+
+### Settlement, step by step
+
+The first three steps never touch the chain. One node sends the transaction, carrying everyone's signatures.
+
+![Three assigned nodes settle one unit](fig:settle)
+
+- **Forward jobs differ.** The node the messages went through signs with verifiers that witnessed them, and it alone is paid.
+- **Batch jobs** fold a run of units into one Merkle root and go on chain once per batch.
+- **The audit in the last step** needs a registry that names the signers of each settlement (`SettledBy`). The registry on the public testnet was deployed before that; there the signers are read from the settling transaction.
+
+### One DePIN epoch
+
+A DePIN network is one compute job on the registry. Its units are epochs, its result is a rewards root, and its oracles are the compute nodes assigned to it. Here station 3 lies about where it is.
+
+![One epoch of a weather network, with a station that lies](fig:depin)
+
+- **A round trip rules places out, never in.** A device that answers slowly on purpose is allowed anywhere. The optional `location.maxRttMs` wants one oracle to have reached it in time.
+- **Not drawn:** proof of coverage, where devices witness each other's ESP-NOW beacons.
+
+### Slashing, step by step
+
+No verifier slashes alone. The others judge again from the evidence, and sign only if they agree.
+
+![A wrong result, from the watcher that finds it to the stake that goes](fig:slash)
+
+- **No vote is needed** for two results signed for one unit, or two statements for one batch. The two signatures are the proof: anyone hands them to the contract, which checks them and takes half the stake.
+- **"Unassigned"** follows the same path with other evidence: the settling transaction. Judges read its signers from the chain and compare them with the plans they kept.
+- **Two verifiers cannot slash.** The accused has no vote, and one signer is fewer than the two the contract wants.
+
 ## Reference
 
 How the network works underneath, for anyone who wants to check our reasoning or build on the protocol itself.

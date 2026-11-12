@@ -226,6 +226,10 @@ try {
 
   // N2 lost one reading in 7 on the way: it fetched them from the stores
   const w2 = N2.workers.get(jv)[0]
+  // (a unit N1 just signed may still be short on N2 while it fetches: on a
+  // slow machine two were, at the moment this looked. Given a little time
+  // it has all but the newest)
+  await until(() => w2.signedCount >= N1.workers.get(jv)[0].signedCount - 1, 30000)
   check('a node that lost readings fetches them from the stores and still signs every unit', N2.backfilled > 0 && w2.signedCount >= N1.workers.get(jv)[0].signedCount - 1, `${N2.backfilled} readings fetched; N2 signed ${w2.signedCount} units, N1 ${N1.workers.get(jv)[0].signedCount}`)
 
   // metrics

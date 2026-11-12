@@ -21,6 +21,7 @@ import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { marked } from 'marked'
+import { figures } from './docs/figures.mjs'
 
 const here = path.dirname(new URL(import.meta.url).pathname)
 const dist = path.join(here, 'dist')
@@ -57,8 +58,14 @@ function renderDocs () {
     if (level === 1) return `<h1 id="${id}">${text}</h1>\n`
     return `<h${level} id="${id}"><a class="anchor" href="#${id}" aria-hidden="true">#</a>${text}</h${level}>\n`
   }
-  // ![caption](img:name) -> docs/img/name.png, embedded
+  // ![caption](img:name) -> docs/img/name.png, embedded;
+  // ![caption](fig:name) -> a figure drawn by docs/figures.mjs (the Architecture chapter)
   r.image = (href, title, text) => {
+    if (href && href.startsWith('fig:')) {
+      const make = figures[href.slice(4)]
+      if (!make) throw new Error(`docs.md names a figure that docs/figures.mjs does not have: ${href}`)
+      return `<figure class="fig">${make()}<figcaption>${esc(text)}</figcaption></figure>`
+    }
     if (href && href.startsWith('img:')) {
       const b64 = fs.readFileSync(path.join(here, 'docs', 'img', href.slice(4) + '.png')).toString('base64')
       return `<figure class="fig"><img src="data:image/png;base64,${b64}" alt="${esc(text)}" loading="lazy"><figcaption>${esc(text)}</figcaption></figure>`

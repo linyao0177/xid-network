@@ -6,7 +6,7 @@ The public site for xid network, the outward name of the decentralized IoT platf
 | --- | --- | --- |
 | `/` | `landing/index.html` | The story: one reading, from signing to a paid result and a caught liar |
 | `/thesis/` | `thesis/index.html` | The long-form thesis: why machine data is the next layer of trust infrastructure |
-| `/docs/` | `docs/docs.md`, `docs/template.html`, `docs/img/` | Pick-your-path, Quick Start, guides for device makers, node operators and apps, reference |
+| `/docs/` | `docs/docs.md`, `docs/template.html`, `docs/img/`, `docs/figures.mjs` | Pick-your-path, Quick Start, guides for device makers, node operators and apps, the Architecture chapter (its figures are drawn by `figures.mjs` at build time: `![caption](fig:name)` in `docs.md`), reference |
 | `/network/` | `network/index.html` | The public testnet, live: nodes, devices, jobs, settlements, and the faucet and sponsor forms |
 | `/depin/` | `depin/index.html` | The testnet's DePIN network (the weather demo) and its enroll form |
 | `/testnet.json` | `testnet.json` | The testnet's chain, contracts, network name, verifiers and nodes (`boat-node init --testnet` reads it) |
