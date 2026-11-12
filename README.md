@@ -24,8 +24,10 @@ Three simulated meters sign readings, the testnet sponsors verify and store jobs
 | [`packages/xid-depin`](packages/xid-depin) | A DePIN toolkit: reward curves, proof of location and proof of coverage as templates (weather, air quality, energy). A network is a contract and a job: the registry's compute nodes are its oracles, score each epoch and settle the rewards root |
 | [`packages/boat-mqtt-node`](packages/boat-mqtt-node) | MQTT over HyperDHT: the broker nodes run, signed messages, receipts, storage on Hypercore, sealed readings; `boat-watch` and `boat-read-store` for apps |
 | [`components/boat_device`](components/boat_device) | ESP-IDF component: a device on the network in a few calls (signed and sealed readings, receipts checked on the device, node list from trusted verifiers) |
+| [`components/boat_depin`](components/boat_depin) | ESP-IDF component: a device of a DePIN network (join record, pongs for proof of location, readings, ESP-NOW beacons and witness reports) |
 | [`components/boat_wifi`](components/boat_wifi) | Wi-Fi from NVS, set over Improv by the browser installer or on the console |
 | [`examples/boat_device_min`](examples/boat_device_min) | The smallest device; its release image joins the public testnet |
+| [`examples/depin_station`](examples/depin_station) | A station of a DePIN network: `xid-depin station` enrolls it and prints the line that sets it up |
 | [`examples/mqtt_p2p`](examples/mqtt_p2p) | A meter and command target over MQTT on HyperDHT |
 | [`site`](site) | iot.xid.network: the landing page, the docs, the testnet page and its API (Cloudflare Workers + D1) |
 | [`tools/release`](tools/release) | Release builds: firmware images with ESP Web Tools manifests, node tarballs, checksums |

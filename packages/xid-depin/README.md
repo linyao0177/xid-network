@@ -25,7 +25,7 @@ npx xid-depin audit ./wx 12
 | The config | `config.json` | What is rewarded and how; its hash is fixed in the contract |
 | Oracles | [`lib/oracle.js`](lib/oracle.js) | The boat-node plugin: follows devices, pings them, publishes evidence, scores, signs |
 | Scoring | [`lib/score.js`](lib/score.js) | A pure function from the oracles' evidence to the rewards tree |
-| Devices | [`lib/device.js`](lib/device.js) | A device in JS (gateways, simulations); ESP32s use `components/boat_device` |
+| Devices | [`lib/device.js`](lib/device.js) | A device in JS (gateways, simulations); ESP32s use [`components/boat_depin`](../../components/boat_depin) |
 
 ## One epoch
 
@@ -135,6 +135,12 @@ A device publishes, signed with its own key (boat-mqtt-node's signed messages):
 | `d/<did>/depin/<net>/pong` | `{ v: 1, nonce }`, the answer to `d/<oracle>/to/<did>/depin-ping` |
 
 `xid-depin sim` runs simulated devices of a network's kind at given places, with a simulated radio between them.
+
+An ESP32 station runs [`examples/depin_station`](../../examples/depin_station) (component [`boat_depin`](../../components/boat_depin)), whose beacons go over ESP-NOW. `xid-depin station` enrolls one and prints the line to type on its console:
+
+```sh
+xid-depin station <dir> --device <its key> --lat <lat> --lon <lon> --payee 0x.. [--key <file>]
+```
 
 ## Tests
 

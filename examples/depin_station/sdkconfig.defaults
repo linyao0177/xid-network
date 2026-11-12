@@ -1,0 +1,24 @@
+CONFIG_IDF_TARGET="esp32c3"
+
+# WiFi + libsodium + hdht is ~1.03 MB, more than the default 1 MB app partition
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Required by hdht (see the main README)
+CONFIG_FREERTOS_HZ=1000
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
+
+# Wi-Fi: components/boat_wifi (set over Improv). The example helper is here
+# only for a developer's default network (CONFIG_EXAMPLE_WIFI_*)
+CONFIG_EXAMPLE_CONNECT_WIFI=y
+CONFIG_EXAMPLE_CONNECT_IPV6=n
+CONFIG_EXAMPLE_PROVIDE_WIFI_CONSOLE_CMD=n
+
+# MQTT runs over HyperDHT (components/hdht_mqtt): no TLS or WebSocket transports
+CONFIG_MQTT_TRANSPORT_SSL=n
+CONFIG_MQTT_TRANSPORT_WEBSOCKET=n
+
+# The console (logs, and Improv for the Wi-Fi network) on the USB port of
+# boards with native USB. On a board whose USB goes to a USB-UART chip, use
+# CONFIG_ESP_CONSOLE_UART_DEFAULT instead: Improv follows the console.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

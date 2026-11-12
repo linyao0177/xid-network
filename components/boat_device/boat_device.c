@@ -282,7 +282,7 @@ boat_device_connected (void) {
 static esp_err_t
 publish_signed (const char *name, const uint8_t *data, size_t len, bool retain) {
   if (!connected) return ESP_ERR_INVALID_STATE;
-  char topic[100];
+  char topic[200];
   snprintf(topic, sizeof(topic), "d/%s/%s", me, name);
   uint8_t *msg = malloc(len + HDHT_MQTT_SIGNED_OVERHEAD);
   if (msg == NULL) return ESP_ERR_NO_MEM;
@@ -304,6 +304,17 @@ boat_device_publish (const char *name, const void *data, size_t len) {
 }
 
 esp_err_t
+boat_device_publish_retained (const char *name, const void *data, size_t len) {
+  return publish_signed(name, data, len, true);
+}
+
+esp_err_t
+boat_device_sign (const void *msg, size_t len, uint8_t sig[64]) {
+  if (!started) return ESP_ERR_INVALID_STATE;
+  return crypto_sign_detached(sig, NULL, msg, len, sk) == 0 ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t
 boat_device_publish_sealed (const char *name, const void *data, size_t len) {
   if (readers_len == 0 || envelope_len <= 0) return ESP_ERR_INVALID_STATE;
   if (sealed_count >= ROTATE_EVERY) {
@@ -312,7 +323,7 @@ boat_device_publish_sealed (const char *name, const void *data, size_t len) {
     snprintf(kname, sizeof(kname), "keys/%08lx", (unsigned long) key_id);
     publish_signed(kname, envelope, (size_t) envelope_len, true);
   }
-  char topic[100];
+  char topic[200];
   snprintf(topic, sizeof(topic), "d/%s/%s", me, name);
   uint8_t *sealed = malloc(len + BOAT_SEAL_OVERHEAD);
   if (sealed == NULL) return ESP_ERR_NO_MEM;

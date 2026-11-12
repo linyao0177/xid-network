@@ -21,6 +21,10 @@
 //       simulated devices of the network's kind at those places: enrolled
 //       (the key pays the fee, or the testnet does), join records, readings,
 //       beacons and pongs
+//   xid-depin station <dir> --device <key> --lat <lat> --lon <lon> --payee 0x..
+//       [--rated W] [--key <file> | --enroll-via https://iot.xid.network]
+//       a hardware station (examples/depin_station): enrolls it and prints
+//       the line to type on its console
 //   xid-depin status <dir>
 //   xid-depin rewards <dir> <epoch>
 //   xid-depin audit <dir> <epoch>
@@ -146,6 +150,29 @@ function readingOf (config, st, t) {
   return out
 }
 
+// without a key, the testnet's site enrolls a device (POST /api/depin/enroll)
+async function enrollViaSite (did) {
+  const site = opt('enroll-via', SITE)
+  const res = await fetch(site + '/api/depin/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device: did }) })
+  const body = await res.json()
+  if (!res.ok || body.error) throw new Error(body.error || res.status)
+  for (let i = 0; i < 40 && body.state !== 'done' && body.state !== 'failed'; i++) {
+    await sleep(4000)
+    Object.assign(body, await (await fetch(`${site}/api/request/${body.id}`)).json())
+  }
+  if (body.state !== 'done') throw new Error(body.result?.error || 'still ' + body.state)
+}
+
+// with a key, it pays the fee itself (in the registry's token)
+async function enrollPaying (w, net, usd, network, did) {
+  const fee = await net.enrollFee()
+  if (fee > 0n) {
+    if ((await usd.balanceOf(w.address)) < fee) await (await usd.mint(w.address, fee * 10n)).wait() // test tokens anyone mints
+    if ((await usd.allowance(w.address, network)) < fee) await (await usd.approve(network, fee * 100n)).wait()
+  }
+  await (await net.enroll('0x' + did)).wait()
+}
+
 if (cmd === 'templates') {
   for (const t of templates()) {
     const c = loadTemplate(t)
@@ -261,18 +288,6 @@ if (cmd === 'templates') {
   const net = attachNetwork(deployment.network, w || provider)
   const reg = attach(deployment.registry, w || provider)
   const usd = new Contract(await reg.token(), TEST_TOKEN.abi, w || provider)
-  // without a key, the testnet's site enrolls the device (POST /api/depin/enroll)
-  const viaSite = async (did) => {
-    const site = opt('enroll-via', SITE)
-    const res = await fetch(site + '/api/depin/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device: did }) })
-    const body = await res.json()
-    if (!res.ok || body.error) throw new Error(body.error || res.status)
-    for (let i = 0; i < 40 && body.state !== 'done' && body.state !== 'failed'; i++) {
-      await sleep(4000)
-      Object.assign(body, await (await fetch(`${site}/api/request/${body.id}`)).json())
-    }
-    if (body.state !== 'done') throw new Error(body.result?.error || 'still ' + body.state)
-  }
   const homes = (opt('home') || die('--home <node key>[,..]')).split(',')
   const stations = (opt('stations') || die('--stations "name@lat,lon;.."')).split(';').filter(Boolean).map((s) => {
     const [name, at] = s.split('@')
@@ -287,7 +302,6 @@ if (cmd === 'templates') {
   const radio = new SimRadio()
   const netKey = deployment.netKey
   const devs = []
-  const fee = await net.enrollFee()
   for (const [i, st] of stations.entries()) {
     const kf = path.join(simDir, st.name + '.key')
     if (!fs.existsSync(kf)) fs.writeFileSync(kf, crypto.randomBytes(32).toString('hex'), { mode: 0o600 })
@@ -297,13 +311,9 @@ if (cmd === 'templates') {
     const payee = new Wallet(fs.readFileSync(pf, 'utf8').trim()).address
     const did = hex(kp.publicKey)
     if ((await net.enrolledAt('0x' + did)) === 0n && !w) {
-      await viaSite(did).then(() => log(`${st.name} enrolled by the testnet`), (err) => log(`${st.name} not enrolled: ${err.message}`))
+      await enrollViaSite(did).then(() => log(`${st.name} enrolled by the testnet`), (err) => log(`${st.name} not enrolled: ${err.message}`))
     } else if ((await net.enrolledAt('0x' + did)) === 0n) {
-      if (fee > 0n) {
-        if ((await usd.balanceOf(w.address)) < fee) await (await usd.mint(w.address, fee * 10n)).wait() // test tokens anyone mints
-        if ((await usd.allowance(w.address, deployment.network)) < fee) await (await usd.approve(deployment.network, fee * 100n)).wait()
-      }
-      await (await net.enroll('0x' + did)).wait()
+      await enrollPaying(w, net, usd, deployment.network, did)
       log(`${st.name} enrolled`)
     }
     st.every = every
@@ -334,6 +344,35 @@ if (cmd === 'templates') {
   const stop = async () => { for (const { dev } of devs) await dev.close(); await dht.destroy(); process.exit(0) }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
+} else if (cmd === 'station') {
+  // a hardware station (examples/depin_station): enrolled, and the line to
+  // type on its console
+  const dir = dirOf()
+  const config = checkConfig(read(dir, 'config.json'))
+  const { provider, deployment } = await chainOf(dir)
+  if (!deployment) die('get or deploy the network first')
+  const did = String(opt('device') || die('--device <the key it prints: DEPIN|device ...>')).toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(did)) die('--device: 64 hex characters')
+  const lat = Number(opt('lat'))
+  const lon = Number(opt('lon'))
+  if (!opt('lat') || !opt('lon') || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) die('--lat and --lon: where it is')
+  let payee
+  try { payee = getAddress(opt('payee') || '') } catch { die('--payee 0x...: who is paid for it') }
+  const rated = config.score.mode === 'energy' ? Number(opt('rated') || die('--rated <W>: the rated power, for an energy network')) : 0
+  const w = opt('key') ? new Wallet(secret(opt('key')), provider) : null
+  const net = attachNetwork(deployment.network, w || provider)
+  if ((await net.enrolledAt('0x' + did)) !== 0n) log('already enrolled')
+  else if (w) {
+    const usd = new Contract(await attach(deployment.registry, w).token(), TEST_TOKEN.abi, w)
+    await enrollPaying(w, net, usd, deployment.network, did)
+    log('enrolled')
+  } else {
+    await enrollViaSite(did)
+    log('enrolled by the testnet')
+  }
+  const cell = cellAt(lat, lon, config.location.resolution)
+  console.log('Type this on the station\'s console:\n')
+  console.log(`depin set ${deployment.netKey} ${cell} ${payee} ${deployment.start} ${config.epoch.length / config.epoch.slots} ${config.readings.topic}${rated ? ' ' + Math.floor(rated) : ''}`)
 } else if (cmd === 'status') {
   const dir = dirOf()
   const config = checkConfig(read(dir, 'config.json'))

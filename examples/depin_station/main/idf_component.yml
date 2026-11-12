@@ -1,0 +1,25 @@
+# Components from this checkout and from hyperdht-esp32 (third_party/, a git
+# submodule: clone with --recursive). In your own project, list
+# tlay/boat_device with a version instead (it brings hdht and hdht_mqtt).
+dependencies:
+  tlay/boat_depin:
+    version: "0.1.0"
+    override_path: "../../../components/boat_depin"
+  tlay/boat_device:
+    version: "0.1.0"
+    override_path: "../../../components/boat_device"
+  tlay/boat_wifi:
+    version: "0.1.0"
+    override_path: "../../../components/boat_wifi"
+  tlay/hdht:
+    version: "0.1.0"
+    override_path: "../../../third_party/hyperdht-esp32/components/hdht"
+  tlay/hdht_mqtt:
+    version: "0.1.0"
+    override_path: "../../../third_party/hyperdht-esp32/components/hdht_mqtt"
+  tlay/libudx:
+    version: "0.1.0"
+    override_path: "../../../third_party/hyperdht-esp32/components/libudx"
+  tlay/uv_esp:
+    version: "0.1.0"
+    override_path: "../../../third_party/hyperdht-esp32/components/uv_esp"

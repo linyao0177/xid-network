@@ -1,0 +1,27 @@
+menu "DePIN station"
+
+config BOAT_NETWORK
+    string "Network name to look up nodes by when there is no node list"
+    default "xid-testnet"
+
+config BOAT_VERIFIERS
+    string "Verify keys of the verifiers to trust for the node list (comma-separated hex)"
+    default ""
+    help
+        The public testnet's come from tools/release/sdkconfig.testnet.
+
+config DEPIN_INTERVAL
+    int "Seconds between readings"
+    default 60
+    help
+        A slot counts as up when it has one reading; the testnet's weather
+        network has 5-minute slots.
+
+config DEPIN_WEATHER_DEMO
+    bool "Weather readings from the chip: t from its temperature sensor, h and p made up"
+    default y
+    help
+        For the testnet's weather network on a bare board. A real station
+        reads its sensors in read_fields() (main.c) instead.
+
+endmenu

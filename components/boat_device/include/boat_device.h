@@ -69,6 +69,11 @@ boat_device_connected (void);
 esp_err_t
 boat_device_publish (const char *name, const void *data, size_t len);
 
+// The same, retained: the node keeps the last one for later subscribers
+// (a record of what the device is, such as a DePIN join record).
+esp_err_t
+boat_device_publish_retained (const char *name, const void *data, size_t len);
+
 // Sealed to the readers, then signed. ESP_ERR_INVALID_STATE without readers.
 esp_err_t
 boat_device_publish_sealed (const char *name, const void *data, size_t len);
@@ -76,6 +81,11 @@ boat_device_publish_sealed (const char *name, const void *data, size_t len);
 // To d/<key>/to/<recipient>/<what> (not signed: the node checks the sender).
 esp_err_t
 boat_device_send (const char *recipient_hex, const char *what, const void *data, size_t len);
+
+// An Ed25519 signature by the device's key over msg (64 bytes into sig),
+// for what it proves outside MQTT: a DePIN beacon over the radio, say.
+esp_err_t
+boat_device_sign (const void *msg, size_t len, uint8_t sig[64]);
 
 typedef struct {
   uint32_t published;    // signed messages esp-mqtt took this boot

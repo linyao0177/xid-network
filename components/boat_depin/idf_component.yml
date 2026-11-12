@@ -1,0 +1,11 @@
+version: "0.1.0"
+description: A device of a DePIN network on the xid network - join record, pongs for proof of location, readings, ESP-NOW beacons and witness reports for proof of coverage
+url: https://github.com/linyao0177/xid-network/tree/main/components/boat_depin
+repository: https://github.com/linyao0177/xid-network.git
+license: MIT
+targets:
+  - esp32c3
+dependencies:
+  idf: ">=5.3"
+  espressif/libsodium: "^1.0.20"
+  tlay/boat_device: "0.1.0"

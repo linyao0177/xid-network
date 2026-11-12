@@ -599,10 +599,17 @@ A device in your network publishes these, signed with its own key:
 | `d/<device>/depin/<network key>/witness` | The beacons it heard in a slot, with their signal strength |
 | `d/<device>/depin/<network key>/pong` | `{ v: 1, nonce }`, its answer to an oracle's ping |
 
+An ESP32-C3 runs `examples/depin_station`, built on the `boat_depin` component. It answers pings, publishes its join record and readings, beacons over ESP-NOW once a slot and reports the beacons it hears. Flash it, then enroll it and set it up from a computer:
+
+```bash
+xid-depin get ./wx --testnet         # the testnet's weather demo
+xid-depin station ./wx --testnet --device <the key it prints> --lat 1.290 --lon 103.852 --payee 0x...
+# then type the `depin set ...` line it prints on the station's console
+```
+
 `xid-depin sim` runs simulated devices of a network at the places you give, with a simulated radio between them. `lib/device.js` is the same in Node for gateways.
 
 ```bash
-xid-depin get ./wx                   # the testnet's weather demo
 xid-depin sim ./wx --home <node key> --stations "roof@25.03,121.56;garden@25.031,121.563"
 ```
 
@@ -619,7 +626,8 @@ curl -fsSL https://iot.xid.network/dl/node/install.sh | sudo sh -s -- \
 
 - **Location.** A round trip can rule a place out, never prove one. Within a few ms of an oracle, it is the radio witnesses that place devices relative to each other.
 - **Fake devices.** What stops one person from posing as many devices is keys kept in hardware, with a manufacturer's credential.
-- **Firmware.** `boat_device` does not yet answer pings or beacon over ESP-NOW. Today the toolkit runs on simulated devices and Node gateways.
+- **Round trips through the home node.** An oracle's ping reaches a device through the node the device is on. An ESP32-C3 in Asia whose node list put it on the node in the US answered in about 400 ms, which rules nothing out. A device on a node near it, or an oracle that takes off its own leg to that node, gives a bound that means something.
+- **Radio witnesses on hardware.** The ESP32 station's beacons verify in JS, and it checks and reports what it hears. Two stations hearing each other over ESP-NOW has not been tested yet.
 
 ## Reference
 
@@ -755,7 +763,7 @@ xid network runs on testnets with real hardware; it is not on a mainnet yet. Eve
 | [Public testnet](#testnet) | Since 2026-11-11: registry v4 on Arc testnet (`0x26Ae7fCe8FBB4cAcE6778eC00a4EfFe785D83329`) with TSUSD as stake, four nodes in the US, EU, Taiwan and Japan, a faucet and a [live page](https://iot.xid.network/network/). An ESP32-C3 flashed with the released `boat_device_min` joined it on its own, after taking its Wi-Fi over Improv |
 | Earlier deployments | Registry v3 on Arc testnet with USDC as stake (`0xCf0977882e057297891402C7a985E35569d63d5f`); registry v2, where a lying node was slashed on chain during a 24-hour soak with an ESP32-C3 as the meter |
 | boat-node | Runs as a process or a systemd service; Prometheus metrics; `--testnet` joins the public testnet |
-| ESP32-C3 firmware | `mqtt_p2p` and `boat_mer` tested on a board over the public HyperDHT. Released images of `boat_device_min` and `uart_module` ([Download](#download)) |
+| ESP32-C3 firmware | `depin_station` ran on a board on the testnet's weather network on 2026-11-12: it was enrolled through the site, located, scored and paid, and was up in every slot of a full epoch with no restart. `mqtt_p2p` and `boat_mer` tested on a board over the public HyperDHT. Released images of `boat_device_min` and `uart_module` ([Download](#download)) |
 | Scale | 24 hours with 16 nodes on 4 machines and 1,000 simulated devices: 2.3 million units, 95.4% settled, units settled in Merkle batches (12.8 batches a transaction) |
 
 Not done yet:
