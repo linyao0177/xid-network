@@ -80,6 +80,17 @@ export const figures = {
     '<div class="cell wire"><b>uv_esp + lwIP</b><small>UDP on Wi-Fi, behind a NAT</small></div><div class="peer real"></div><div class="cell wire"><b>libuv</b><small>UDP</small></div>' +
     '</div></div>',
 
+  // what runs on the chip, top to bottom; settlement is the one part off the device
+  boat: () => '<div class="xfig"><div class="xboat">' +
+    '<div class="cell econ"><b>Economy layer</b><small>machine payments · DePIN rewards</small></div>' +
+    '<div class="cell off"><b>On chain</b><small>settlement</small></div>' +
+    [['trust', 'Trust layer', 'identity · signed data and receipts · factory credentials · zero-knowledge checks'],
+      ['', 'Connectivity', 'HyperDHT on the chip: direct links · MQTT · firmware updates · BLE'],
+      ['wire', 'ESP-IDF', 'FreeRTOS · lwIP · Wi-Fi and BLE · NVS'],
+      ['wire', 'ESP32-C3', 'RISC-V at 160 MHz · 400 KB of RAM']]
+      .map(([c, a, b]) => `<div class="cell wide ${c}"><b>${esc(a)}</b><small>${esc(b)}</small></div>`).join('') +
+    '</div></div>',
+
   link: () => scene('link', 290, (A) =>
     '<rect class="grp" x="30" y="96" width="212" height="170" rx="12"/>' + T(44, 116, 'HOME WI-FI', 'tm', 'start') +
     B(50, 150, 96, 60, 'x', 'ESP32-C3', 'holds the key') + B(180, 160, 50, 40, 'x', 'NAT') + '<line class="ar" x1="146" y1="180" x2="180" y2="180"/>' +
