@@ -14,8 +14,12 @@
 //    that cannot both be true are both left out, so an oracle that lies
 //    cannot rule out a device that an honest one near it reaches. (One that
 //    lies about a device no other oracle is near can: its round trips are in
-//    its signed index, on record.) A device with no valid location earns
-//    nothing.
+//    its signed index, on record.) A round trip only rules places out: a
+//    device that answers slowly on purpose is "allowed" anywhere. With
+//    location.maxRttMs, a device also needs one oracle that reached it within
+//    that time, which puts it within that oracle's reach; a network sets it
+//    to what its oracles' spread allows. A device with no valid location
+//    earns nothing.
 // 3. Readings. The epoch is cut into slots; a slot is up when the device
 //    signed a reading in it, and good when every field is within range (and,
 //    with crossCheck, close to the median of the sensors around it).
@@ -128,6 +132,7 @@ export function scoreEpoch ({ config, net, epoch, start, emission, devices, shee
     const violations = kept.filter((r) => !latencyAllows(r.loc, d.cell, r.rtt, L)).length
     if (requirePing && d.rtts.length === 0) d.location = 'no oracle reached it'
     else if (violations >= L.minViolations) d.location = `too far for ${violations} round trip${violations > 1 ? 's' : ''}`
+    else if (L.maxRttMs !== undefined && !kept.some((r) => r.rtt <= L.maxRttMs)) d.location = 'no oracle near enough'
     else d.location = 'ok'
   }
   const located = (d) => d && d.location === 'ok'

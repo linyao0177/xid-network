@@ -20,6 +20,7 @@
 
 import sodium from 'sodium-universal'
 import { hex } from './topics.js'
+import { open } from './signed.js'
 
 export const MAX_RANGES = 32
 const PREFIX = 'boat-receipt/1'
@@ -31,21 +32,31 @@ export function seqOf (payload) {
 }
 
 export class Receipts {
-  constructor (keyPair) {
+  // max: devices remembered. Keys are free to make, so beyond that the one
+  // idle longest is dropped (its count starts again, as after a restart)
+  constructor (keyPair, { max = 100000 } = {}) {
     this.keyPair = keyPair
-    this.devices = new Map() // device hex -> { count, bytes, ranges: [[a, b]], dirty }
+    this.max = max
+    this.devices = new Map() // device hex -> { count, bytes, ranges: [[a, b]], dirty }, the busiest last
   }
 
-  // records a signed message; false when it is not one, or its seq was seen
-  add (device, payload) {
+  // records a signed message; false when it is not one, or its seq was seen.
+  // With the topic it came on, its signature is checked first: a receipt is
+  // the signer's word that it got signed messages, not bytes that look like
+  // them. Without, the caller has checked it (a store has, to keep it).
+  add (device, payload, topic = null) {
     const seq = seqOf(payload)
     if (seq === null) return false
     const key = hex(device)
+    if (topic !== null && !open(Buffer.from(key, 'hex'), topic, payload)) return false
     let d = this.devices.get(key)
     if (!d) {
       d = { count: 0, bytes: 0, ranges: [], dirty: false }
-      this.devices.set(key, d)
+      if (this.devices.size >= this.max) this.devices.delete(this.devices.keys().next().value)
+    } else {
+      this.devices.delete(key) // (in time order: the busiest last)
     }
+    this.devices.set(key, d)
     if (!insert(d.ranges, seq)) return false
     if (d.ranges.length > MAX_RANGES) d.ranges.splice(0, d.ranges.length - MAX_RANGES)
     d.count++
@@ -101,7 +112,14 @@ export function openReceipt (line, signer) {
   if (signer && hex(signer) !== f[1]) return null
   const sig = Buffer.from(line.slice(cut + 1), 'hex')
   if (sig.length !== 64 || !sodium.crypto_sign_verify_detached(sig, Buffer.from(body), Buffer.from(f[1], 'hex'))) return null
-  const ranges = f[5] ? f[5].split(';').map((r) => r.split('-').map(BigInt)) : []
+  // signed, but not a receipt: numbers that are not numbers, a range that is not one
+  if (![f[3], f[4], f[6]].every((n) => /^\d{1,15}$/.test(n))) return null
+  const ranges = []
+  for (const r of f[5] ? f[5].split(';') : []) {
+    const m = /^(\d{1,20})-(\d{1,20})$/.exec(r)
+    if (!m || BigInt(m[1]) > BigInt(m[2])) return null
+    ranges.push([BigInt(m[1]), BigInt(m[2])])
+  }
   return { signer: f[1], device: f[2], count: Number(f[3]), bytes: Number(f[4]), ranges, t: Number(f[6]) }
 }
 

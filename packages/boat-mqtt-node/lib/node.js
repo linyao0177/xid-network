@@ -11,6 +11,7 @@ import { Receipts } from './receipts.js'
 
 const BRIDGED = '$bridge' // marks packets a bridge brought in from another node
 const ANNOUNCE_MS = 10 * 60 * 1000 // DHT nodes keep an announcement for 20 minutes
+const MAX_USAGE = 100000 // keys whose usage is counted (keys are free to make): the one idle longest goes first
 
 // CONNACK return codes (MQTT 3.1.1)
 const IDENTIFIER_REJECTED = 2
@@ -217,14 +218,16 @@ export class BoatMqttNode extends EventEmitter {
       this.emit('refused', { client: describe(client), topic, reason })
       return done(new Error(reason)) // MQTT 3.1.1: the node closes the connection
     }
-    if (client.key && this.receipts) this.receipts.add(client.key, packet.payload)
+    if (client.key && this.receipts) this.receipts.add(client.key, packet.payload, topic)
     // what clients published here themselves (forwarding work, boat-registry)
     if (client.key) this.emit('published', { key: client.key, topic, payload: packet.payload })
     const id = client.key || 'tcp:' + client.user
     const u = this._usage.get(id) || { messages: 0, bytes: 0 }
     u.messages++
     u.bytes += packet.payload.length
+    this._usage.delete(id) // (in time order: the busiest last)
     this._usage.set(id, u)
+    if (this._usage.size > MAX_USAGE) this._usage.delete(this._usage.keys().next().value)
     done(null)
   }
 
@@ -241,7 +244,7 @@ export class BoatMqttNode extends EventEmitter {
     if (filters.length) await client.subscribeAsync(filters, { qos: 1 })
     client.on('message', (topic, payload, packet) => {
       const from = senderOf(topic)
-      if (from && this.receipts) this.receipts.add(from, payload)
+      if (from && this.receipts) this.receipts.add(from, payload, topic)
       this.broker.publish({ cmd: 'publish', topic, payload, qos: packet.qos, retain: false, clientId: BRIDGED }, () => {})
     })
     this.bridges.add(client)

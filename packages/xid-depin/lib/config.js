@@ -49,6 +49,7 @@ export function configProblem (c) {
   }
   const l = c.location
   if (!l || !int(l.resolution, 0, 15) || !int(l.kmPerMs, 1, 300) || !int(l.slackKm, 0, 20000) || !int(l.minViolations, 1, 32)) return 'location: resolution, kmPerMs, slackKm, minViolations'
+  if (l.maxRttMs !== undefined && !int(l.maxRttMs, 1, 10000)) return 'location.maxRttMs: 1 to 10000 ms'
   const cov = c.coverage || {}
   if (cov.poc) {
     const p = cov.poc

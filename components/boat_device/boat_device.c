@@ -19,6 +19,7 @@
 static const char *TAG = "boat_device";
 
 #define ROTATE_EVERY 1000 // sealed messages under one data key
+#define LIST_RETRY_MS 60000 // between tries for a node list, while there is none
 
 static boat_device_config_t cfg;
 static char ns[16];
@@ -32,12 +33,13 @@ static esp_transport_handle_t transport;
 static esp_mqtt_client_handle_t mqtt;
 static volatile bool connected, started;
 static uv_async_t home_async;
-static uv_timer_t republish;
+static uv_timer_t republish, list_retry;
+static uint32_t pick;          // the page of the node list: from our key, so devices spread out
 static uint8_t home[32];
 static volatile bool home_set;
 static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t count;         // signed messages this boot (the low half of seq)
-static uint64_t last_seq;
+static uint64_t last_seq;      // the highest seq esp-mqtt took; with count and stats.published, under mux
 static boat_device_stats_t stats;
 
 // sealed readings
@@ -47,22 +49,36 @@ static uint8_t data_key[32];
 static uint32_t key_id, sealed_count;
 static uint8_t envelope[BOAT_SEAL_ENVELOPE_SIZE(BOAT_SEAL_MAX_READERS)];
 static int envelope_len;
+static volatile bool envelope_sent; // esp-mqtt took the envelope of key_id on this connection
 
-static void
+// The seed and the boot counter. Without both kept in NVS there is no
+// device: it never signs with a seed it could not read or store, nor with a
+// sequence number that may have been used.
+static esp_err_t
 load_state (void) {
   nvs_handle_t nvs;
-  if (nvs_open(ns, NVS_READWRITE, &nvs) != ESP_OK) return;
+  esp_err_t err = nvs_open(ns, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) return err;
   size_t len = 32;
-  if (nvs_get_blob(nvs, "seed", seed, &len) != ESP_OK) {
+  err = nvs_get_blob(nvs, "seed", seed, &len);
+  if (err == ESP_OK && len != 32) err = ESP_ERR_INVALID_SIZE;
+  if (err == ESP_ERR_NVS_NOT_FOUND) { // first boot only: any other error keeps the identity it may have
     randombytes_buf(seed, 32);
-    nvs_set_blob(nvs, "seed", seed, 32);
+    err = nvs_set_blob(nvs, "seed", seed, 32);
   }
-  nvs_get_u32(nvs, "boot", &boot);
-  boot++;
-  nvs_set_u32(nvs, "boot", boot);
-  nvs_get_u64(nvs, "rec_seq", &record_seq);
-  nvs_commit(nvs);
+  if (err == ESP_OK) {
+    err = nvs_get_u32(nvs, "boot", &boot);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+  }
+  if (err == ESP_OK) {
+    boot++;
+    err = nvs_set_u32(nvs, "boot", boot);
+    nvs_get_u64(nvs, "rec_seq", &record_seq);
+  }
+  if (err == ESP_OK) err = nvs_commit(nvs);
   nvs_close(nvs);
+  if (err != ESP_OK) sodium_memzero(seed, sizeof(seed));
+  return err;
 }
 
 static size_t
@@ -84,6 +100,7 @@ new_data_key (void) {
   randombytes_buf(data_key, 32);
   key_id = ((boot & 0xffff) << 16) | ((key_id + 1) & 0xffff);
   sealed_count = 0;
+  envelope_sent = false;
   envelope_len = boat_seal_envelope(key_id, data_key, (const uint8_t (*)[32]) readers, readers_len, envelope, sizeof(envelope));
 }
 
@@ -155,13 +172,14 @@ on_mqtt (void *arg, esp_event_base_t base, int32_t id, void *data) {
     if (envelope_len > 0) { // the readers' key, where nodes keep it
       char name[24];
       snprintf(name, sizeof(name), "keys/%08lx", (unsigned long) key_id);
-      publish_signed(name, envelope, (size_t) envelope_len, true);
+      envelope_sent = publish_signed(name, envelope, (size_t) envelope_len, true) == ESP_OK;
     }
     if (cfg.on_connected) cfg.on_connected(node, cfg.ctx);
     break;
   }
   case MQTT_EVENT_DISCONNECTED:
     connected = false;
+    envelope_sent = false; // the next node may not have it
     ESP_LOGI(TAG, "disconnected");
     break;
   case MQTT_EVENT_DATA: {
@@ -182,8 +200,13 @@ on_mqtt (void *arg, esp_event_base_t base, int32_t id, void *data) {
       // the node's signed word on what it got from us this boot
       hdht_mqtt_receipt_t r;
       uint64_t covered = 0, beyond = 0, lo = (uint64_t) boot << 32;
+      taskENTER_CRITICAL(&mux);
+      uint64_t hi = last_seq >= lo ? last_seq : lo - 1; // nothing sent this boot yet: nothing of it to name
+      taskEXIT_CRITICAL(&mux);
+      // good: signed by the node, for us, and naming nothing we never sent.
+      // covered is not asked for: a receipt may be behind what was sent
       bool ok = hdht_mqtt_receipt_open(info.node, pk, e->data, e->data_len, &r) == 0 &&
-                hdht_mqtt_receipt_check(e->data, e->data_len, lo, last_seq, &covered, &beyond) == 0 && beyond == 0;
+                hdht_mqtt_receipt_check(e->data, e->data_len, lo, hi, &covered, &beyond) == 0 && beyond == 0;
       if (ok) stats.receipts_ok++;
       else stats.receipts_bad++;
       break;
@@ -213,11 +236,50 @@ start_mqtt (void) {
   esp_mqtt_client_start(mqtt);
 }
 
+// the verify keys the node list trusts: the ones it saved in NVS, else the
+// configured ones (as hdht_mqtt's keeper reads them)
+static size_t
+load_trusted (uint8_t (*out)[32]) {
+  nvs_handle_t nvs;
+  size_t len = HDHT_MQTT_NODELIST_VERIFIERS * 32, n = 0;
+  if (nvs_open(ns, NVS_READONLY, &nvs) == ESP_OK) {
+    if (nvs_get_blob(nvs, "verifiers", out, &len) == ESP_OK && len % 32 == 0) n = len / 32;
+    nvs_close(nvs);
+  }
+  return n ? n : parse_keys(cfg.verifiers, out, HDHT_MQTT_NODELIST_VERIFIERS);
+}
+
+static void
+on_list_again (int status, const hdht_mqtt_nodelist_t *l, size_t votes, void *data) {
+  (void) votes;
+  (void) data;
+  if (mqtt || status != 0 || l->nodes_len == 0) return;
+  hdht_mqtt_transport_set_nodes(transport, (const uint8_t (*)[32]) l->nodes, l->nodes_len);
+  uv_timer_stop(&list_retry);
+  ESP_LOGI(TAG, "node list read: %u node(s)", (unsigned) l->nodes_len);
+  start_mqtt();
+}
+
+static void
+on_list_retry (uv_timer_t *t) {
+  (void) t;
+  uint8_t trusted[HDHT_MQTT_NODELIST_VERIFIERS][32];
+  size_t n = load_trusted(trusted);
+  if (n) hdht_mqtt_nodelist_fetch(&dht, (const uint8_t (*)[32]) trusted, n, pick, on_list_again, NULL);
+}
+
 static void
 on_list_ready (bool taken, void *data) {
-  (void) taken;
   (void) data;
-  start_mqtt(); // without a list, the transport looks the network name up
+  if (taken) {
+    start_mqtt();
+    return;
+  }
+  // It has verifiers to trust, so only the nodes they list will do: looking
+  // the network name up instead would take any node that announces it.
+  ESP_LOGW(TAG, "no node list from its verifiers: not connecting, trying again every %d s", LIST_RETRY_MS / 1000);
+  uv_timer_init(&loop, &list_retry);
+  uv_timer_start(&list_retry, on_list_retry, LIST_RETRY_MS, LIST_RETRY_MS);
 }
 
 static void
@@ -230,8 +292,13 @@ on_ready (hdht_t *d, int status) {
   }
   uint8_t node[1][32];
   if (parse_keys(cfg.node, node, 1) == 1) hdht_mqtt_transport_prefer(transport, node[0]);
-  uint32_t pick = ((uint32_t) pk[0] << 24) | ((uint32_t) pk[1] << 16) | ((uint32_t) pk[2] << 8) | pk[3];
-  if (hdht_mqtt_nodelist_keep(d, transport, ns, cfg.verifiers, pick, on_list_ready, NULL) != 0) start_mqtt();
+  uint8_t trusted[HDHT_MQTT_NODELIST_VERIFIERS][32];
+  if (load_trusted(trusted) == 0) {
+    start_mqtt(); // no verifiers: the transport looks the network name up
+    return;
+  }
+  pick = ((uint32_t) pk[0] << 24) | ((uint32_t) pk[1] << 16) | ((uint32_t) pk[2] << 8) | pk[3];
+  if (hdht_mqtt_nodelist_keep(d, transport, ns, cfg.verifiers, pick, on_list_ready, NULL) != 0) on_list_ready(false, NULL);
 }
 
 static void
@@ -261,7 +328,11 @@ boat_device_start (const boat_device_config_t *c) {
   if (sodium_init() < 0) return ESP_FAIL;
   cfg = *c;
   snprintf(ns, sizeof(ns), "%s", c->nvs_namespace);
-  load_state();
+  esp_err_t err = load_state();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "no identity: NVS namespace %s: %s", ns, esp_err_to_name(err));
+    return err;
+  }
   hdht_keypair(pk, sk, seed);
   sodium_bin2hex(me, sizeof(me), pk, 32);
   readers_len = parse_keys(c->readers, readers, BOAT_SEAL_MAX_READERS);
@@ -295,8 +366,10 @@ publish_signed (const char *name, const uint8_t *data, size_t len, bool retain) 
   int id = n < 0 ? -1 : esp_mqtt_client_publish(mqtt, topic, (const char *) msg, n, 1, retain);
   free(msg);
   if (id < 0) return ESP_FAIL;
-  last_seq = seq;
+  taskENTER_CRITICAL(&mux);
+  if (seq > last_seq) last_seq = seq; // another task may have sent a later one meanwhile
   stats.published++;
+  taskEXIT_CRITICAL(&mux);
   return ESP_OK;
 }
 
@@ -318,12 +391,15 @@ boat_device_sign (const void *msg, size_t len, uint8_t sig[64]) {
 
 esp_err_t
 boat_device_publish_sealed (const char *name, const void *data, size_t len) {
-  if (readers_len == 0 || envelope_len <= 0) return ESP_ERR_INVALID_STATE;
-  if (sealed_count >= ROTATE_EVERY) {
-    new_data_key();
+  if (readers_len == 0) return ESP_ERR_INVALID_STATE;
+  if (sealed_count >= ROTATE_EVERY) new_data_key();
+  if (envelope_len <= 0) return ESP_FAIL;
+  if (!envelope_sent) { // first the key, then what it seals: a reading nobody can open is not published
     char kname[24];
     snprintf(kname, sizeof(kname), "keys/%08lx", (unsigned long) key_id);
-    publish_signed(kname, envelope, (size_t) envelope_len, true);
+    esp_err_t kerr = publish_signed(kname, envelope, (size_t) envelope_len, true);
+    if (kerr != ESP_OK) return kerr;
+    envelope_sent = true;
   }
   char topic[200];
   snprintf(topic, sizeof(topic), "d/%s/%s", me, name);

@@ -23,7 +23,7 @@
     "examples/read-store.js"
   ],
   "scripts": {
-    "test": "node test/run.js && node test/retained.js && node test/burst.js && node test/store.js && node test/sealed.js && node test/gateway.js"
+    "test": "node test/offline.js && node test/run.js && node test/retained.js && node test/burst.js && node test/store.js && node test/sealed.js && node test/gateway.js"
   },
   "license": "MIT",
   "engines": {

@@ -1,7 +1,7 @@
 version: "0.1.0"
 description: A Wi-Fi station set up over the serial console with Improv Wi-Fi, as ESP Web Tools does right after flashing
-url: https://github.com/linyao0177/hyperdht-esp32/tree/main/components/boat_wifi
-repository: https://github.com/linyao0177/hyperdht-esp32.git
+url: https://github.com/linyao0177/xid-network/tree/main/components/boat_wifi
+repository: https://github.com/linyao0177/xid-network.git
 license: MIT
 targets:
   - esp32c3

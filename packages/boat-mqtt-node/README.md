@@ -52,8 +52,8 @@ Each node signs a receipt for the signed messages it handled for a device, direc
 A storage node keeps the history of devices, in Hypercores ([`lib/store.js`](lib/store.js), `boat-mqtt-store --device <key>`):
 
 - It follows each device to its home node and keeps only messages that carry the device's signature, refusing replays. Each device gets a core signed by the store, so a reader checks every entry twice: against the store's signed tree and against the device's own signature. A store can lose data but cannot change it.
-- A catalog (Hyperbee) maps devices to cores. The store's DHT record names it and a key to replicate from. A mirror (`createMirror`) copies the cores with Hypercore's own replication and serves them the same way.
-- Anyone can check a store without holding the data: a spot check asks for random blocks with their Merkle proofs, using `packages/boat-ota`'s protocol, which devices also check in C. A store that dropped a block cannot answer for it.
+- A catalog (Hyperbee) maps devices to cores. The store's DHT record names it and a key to replicate from. A mirror (`createMirror`) copies the cores with Hypercore's own replication and serves them the same way. A store that sells reads (`authorize`) lets only the mirrors it names replicate (`replicate: [keys]`), since replication hands over every block for nothing.
+- Anyone can check a store without holding the data: a spot check asks for random blocks with their Merkle proofs, using `packages/boat-ota`'s protocol, which devices also check in C. A store that dropped a block cannot answer for it. How long the log is, is the store's word: a checker passes what it knows (`spotCheck(..., { minLength, seqs, core, signer })`).
 - It signs receipts for what it stored, as every hop does.
 
 `examples/read-store.js <store> <device> [--mirror dir]` reads and checks a device's history and spot-checks the store.
@@ -106,7 +106,7 @@ out.publish(to(app.publicKey, deviceKey, 'cmd'), 'relay=on')
 
 ## Tests
 
-`npm test` runs `test/run.js` (42 checks), `test/store.js` (storage nodes, 9) and `test/gateway.js` (NanoMQ, 12, when `$NANOMQ` is set). On a local HyperDHT testnet, `test/run.js` covers:
+`npm test` runs `test/offline.js` (30 checks, with a stand-in DHT in the process: no network), `test/run.js` (42 checks), `test/store.js` (storage nodes, 9) and `test/gateway.js` (NanoMQ, 12, when `$NANOMQ` is set). On a local HyperDHT testnet, `test/run.js` covers:
 
 - **Signed messages and receipts:** C and JS signatures and receipts checked against each other.
 - **Receipts:** a node's receipt for what it got, one for each hop through a bridge, and an invoice whose receipt matches the bill.

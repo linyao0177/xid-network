@@ -42,7 +42,7 @@ import crypto from 'crypto'
 import HyperDHT from 'hyperdht'
 import { Wallet, Contract, HDNodeWallet, getAddress, keccak256 } from 'ethers'
 import { connect, publishHome, homeOf } from 'boat-mqtt-node'
-import { providerFor, TEST_TOKEN, attach } from 'boat-registry'
+import { providerFor, TEST_TOKEN, attach, merkleRoot } from 'boat-registry'
 import { loadTemplate, templates, checkConfig, configHash } from '../lib/config.js'
 import { curveOf, emission } from '../lib/curve.js'
 import { deployNetwork, attachNetwork, attachToken, networkInfo } from '../lib/network.js'
@@ -111,25 +111,32 @@ async function atHome (dir, dht) {
   return connect(home, { dht, keyPair: HyperDHT.keyPair() })
 }
 
-// what the oracles published about an epoch, at the network's home node
-async function gather (dir, epoch, ms = 8000) {
-  const dht = newDht()
-  const c = await atHome(dir, dht)
-  const net = hex(netPublicKey(dir))
-  const got = { rewards: [], indexes: [], sheets: new Map(), work: [] }
-  c.on('message', (topic, payload) => {
-    const p = topic.split('/')
-    if (p[2] === 'work') { try { got.work.push(JSON.parse(payload.toString())) } catch {} return }
-    if (p[5] === 'rewards') { try { got.rewards.push(JSON.parse(payload.toString())) } catch {} }
-    else if (p[5] === 'index') { const x = openIndex(payload); if (x && x.work === p[1]) got.indexes.push(x) }
-    else if (p[5] === 'sheet') got.sheets.set(p[1] + ':' + p[6], Buffer.from(payload))
-  })
-  await c.subscribeAsync(`d/+/depin/${net}/${epoch}/#`, { qos: 1 })
-  await c.subscribeAsync(`d/+/work/${net}/+/${epoch}`, { qos: 1 })
-  await sleep(ms)
-  c.end(true)
-  await dht.destroy()
-  return got
+// what the oracles published about an epoch, at the network's home node.
+// Give it a DHT to use one that is already up (the keeper's); a DHT it makes
+// itself goes away with the call, also when the home cannot be reached: a
+// keeper that left one behind every round ran out of sockets in a day
+async function gather (dir, epoch, ms = 8000, shared = null) {
+  const dht = shared || newDht()
+  let c = null
+  try {
+    c = await atHome(dir, dht)
+    const net = hex(netPublicKey(dir))
+    const got = { rewards: [], indexes: [], sheets: new Map(), work: [] }
+    c.on('message', (topic, payload) => {
+      const p = topic.split('/')
+      if (p[2] === 'work') { try { got.work.push(JSON.parse(payload.toString())) } catch {} return }
+      if (p[5] === 'rewards') { try { got.rewards.push(JSON.parse(payload.toString())) } catch {} }
+      else if (p[5] === 'index') { const x = openIndex(payload); if (x && x.work === p[1]) got.indexes.push(x) }
+      else if (p[5] === 'sheet') got.sheets.set(p[1] + ':' + p[6], Buffer.from(payload))
+    })
+    await c.subscribeAsync(`d/+/depin/${net}/${epoch}/#`, { qos: 1 })
+    await c.subscribeAsync(`d/+/work/${net}/+/${epoch}`, { qos: 1 })
+    await sleep(ms)
+    return got
+  } finally {
+    if (c) c.end(true)
+    if (!shared) await dht.destroy().catch(() => {})
+  }
 }
 
 // readings for a simulated device of the template: a slow day's cycle shared
@@ -246,11 +253,18 @@ if (cmd === 'templates') {
           if (now - e > 3) { claimedUpTo.e = e; continue } // never published: past it
           break
         }
-        const got = await gather(dir, e, 6000)
-        const tree = got.rewards.find((r) => r.root === ep.root)
-        if (!tree) { log(`epoch ${e}: no rewards tree with the published root yet`); break }
-        const leaves = tree.leaves.map((l) => ({ ...l, amount: BigInt(l.amount), leaf: null }))
-        for (const l of leaves) l.leaf = leafOf(e, l.did, l.payee, l.amount)
+        const got = await gather(dir, e, 6000, dht)
+        // a tree is anyone's word until its leaves give the published root
+        const leavesOf = (r) => {
+          try {
+            const leaves = r.leaves.map((l) => ({ ...l, amount: BigInt(l.amount), leaf: null }))
+            for (const l of leaves) l.leaf = leafOf(e, l.did, l.payee, l.amount)
+            return leaves.length && merkleRoot(leaves.map((l) => l.leaf)) === ep.root ? leaves : null
+          } catch { return null }
+        }
+        let leaves = null
+        for (const r of got.rewards) if (r && r.root === ep.root && (leaves = leavesOf(r))) break
+        if (!leaves) { log(`epoch ${e}: no rewards tree with the published root yet`); break }
         const items = leaves.map((l) => claimOf({ epoch: e, leaves }, l.did)).map((c) => ({ epoch: e, did: '0x' + c.did, payee: c.payee, amount: c.amount, proof: c.proof }))
         for (let i = 0; i < items.length; i += 20) {
           const part = items.slice(i, i + 20)

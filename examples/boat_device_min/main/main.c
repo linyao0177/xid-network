@@ -124,7 +124,7 @@ static void
 on_message (const char *from, const char *what, const uint8_t *data, size_t len, void *ctx) {
   (void) ctx;
   printf("BOAT|message from %.12s... (%s): %.*s\n", from, what, (int) len, (const char *) data);
-  boat_device_send(from, "ack", data, len);
+  if (strcmp(what, "ack") != 0) boat_device_send(from, "ack", data, len); // never an ack for an ack: two devices would go on for ever
 }
 
 void

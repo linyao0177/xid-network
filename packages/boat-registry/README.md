@@ -2,14 +2,13 @@
 
 The on-chain part of a network of MQTT nodes anyone can run ([`packages/boat-mqtt-node`](../boat-mqtt-node)), and `boat-node`, one program for a node in any of its roles.
 
-Only what needs one global answer is on chain: who runs a node and with what stake, the roots verifiers anchor, who is slashed, and who owns a device. Messages, storage, verdicts and computations stay off-chain, signed so they can be checked.
+Only what needs one global answer is on chain: who runs a node and with what stake, which work was settled and by whom, who is slashed, and who owns a device. Messages, storage, verdicts and computations stay off-chain, signed so they can be checked.
 
 ## The contract
 
 [`contracts/BoatRegistry.sol`](contracts/BoatRegistry.sol), with an ERC-20 (a stablecoin) as stake.
 
 - **Nodes** register a HyperDHT key, roles (forward, store, verify, compute) and a stake at or above the minimum. The stake comes back only after an unbonding period, and it can still be slashed meanwhile.
-- **Anchors.** A verifier posts each batch's Merkle root once.
 - **Slashing.**
     - Most chains cannot check Ed25519, the signature devices and nodes use on HyperDHT. So a statement a node can lose stake for is also signed with its EVM operator key (EIP-191).
     - **Equivocation:** two different roots signed for one batch. The contract checks it itself and takes half the stake.
@@ -128,8 +127,8 @@ A device can seal its readings to its readers: the owner, and compute nodes by t
 [`lib/verifier.js`](lib/verifier.js)
 
 - **Verdicts.** A verifier follows devices to their home nodes and gives each message a verdict: the device's own signature, replay, and a BoAT MER attestation when the message carries one.
-- **Batches.** Every batch becomes a Merkle tree with keccak256 leaves (so a contract can check inclusion). The verifier signs the root, anchors it, and publishes the whole batch, retained at `d/<verifier>/batches/<n>`.
-- **Checking.** Anyone checks a batch against the anchored root (`checkBatch`) and gets a message's verdict with its proof (`verdictOf`). Another verifier that holds the same messages re-checks them (`auditBatch`).
+- **Batches.** Every batch becomes a Merkle tree with keccak256 leaves (so a contract can check inclusion). The verifier signs the root (the signature is what it answers for; the root is not put on chain) and publishes the whole batch, retained at `d/<verifier>/batches/<n>`.
+- **Checking.** Anyone checks a batch against the signed root (`checkBatch`) and gets a message's verdict with its proof (`verdictOf`). Another verifier that holds the same messages re-checks them (`auditBatch`).
 
 ## Compute nodes
 
@@ -312,4 +311,6 @@ The `boat-node` test runs six nodes on a local chain with three jobs on one mete
 - **Quorum gas.** The weighted quorum walks every verifier: fine for tens of verifiers, not for thousands (an epoch snapshot would fix it).
 - **A forward unit needs one node.** A unit whose messages went through two nodes (the device moved) is not paid to either.
 - **No audit.** The contract has been reviewed by an agent and fuzzed, not audited.
+- **Assignment is checked after the fact.** The contract pays any `quorum` active nodes of a job's role; who was assigned is computed off-chain. It names the signers of each settlement (`SettledBy`), and the watchers slash one that was not assigned ([`lib/audit.js`](lib/audit.js), `test/audit.js`), but the unit's pay has left the job by then. On a registry deployed before `SettledBy`, the signers are read from the settling transaction, which only works when it called the registry directly.
+- **Contract size.** `BoatRegistry` is 17 bytes under the 24,576-byte limit: the next addition needs something moved out (a library, or the device claims).
 - **Epoch roots.** Settlement is still one unit at a time (in batches); the economics say it should be one root per node an hour.

@@ -18,6 +18,8 @@
 //     (--depin, run by xid-depin's lib/hub.js: it deploys the network, keeps
 //     its home record at --depin-home, claims its rewards, and the snapshot
 //     shows it).
+// What a request has paid so far is kept in <--state>.requests until the site
+// has its answer, so a request the site hands out again is not paid twice.
 // The hub wallet pays the gas; the stake token mints for anyone. The key file
 // and the token never leave this machine and are never printed.
 
@@ -143,6 +145,9 @@ async function follow () {
 
 // ---- devices: what they publish on the public nodes -----------------------------
 
+// Anyone can publish under a new key, so only the DEVICES heard from most
+// recently are kept (the map is in that order: the oldest is its first).
+const DEVICES = 5000
 const devices = new Map() // key -> { first, last, count, node, text, kind }
 const online = new Map() // node key -> { connected, since, error }
 const inbox = new SignedInbox()
@@ -166,7 +171,10 @@ function watchNode (n) {
         const dev = senderOf(topic)
         if (!dev) return
         let d = devices.get(dev)
-        if (!d) devices.set(dev, (d = { first: Date.now(), count: 0 }))
+        if (d) devices.delete(dev)
+        else d = { first: Date.now(), count: 0 }
+        devices.set(dev, d)
+        if (devices.size > DEVICES) devices.delete(devices.keys().next().value)
         d.last = Date.now()
         d.count++
         d.node = n.name
@@ -210,24 +218,67 @@ const hubCall = async (what, body) => {
   return res.json()
 }
 
-async function faucet (address) {
-  const gas = await wallet.sendTransaction({ to: address, value: parseEther(DRIP_GAS) })
-  await gas.wait()
-  const mint = await token.mint(address, DRIP_TOKEN)
-  await mint.wait()
-  return { gas: DRIP_GAS, token: DRIP_TOKEN.toString(), txs: [gas.hash, mint.hash] }
+// What each request under way has paid so far, on disk. The site hands a
+// request out again when the hub stopped half way or its answer was lost: then
+// what is already paid is not paid again, and what is already done is only
+// answered again. An entry goes once the site has the answer.
+const DOING = STATE + '.requests'
+let doing = {} // request id -> { kind, steps: { <name>: 'started' | { v } }, out: { ok, result } }
+try { doing = JSON.parse(fs.readFileSync(DOING, 'utf8')) } catch {}
+const keep = () => fs.writeFileSync(DOING + '.tmp', JSON.stringify(doing)) || fs.renameSync(DOING + '.tmp', DOING)
+
+// One step of a request, done once: what it gave (a transaction's hash, a
+// job's id) is kept before anything waits on it. A step that was under way
+// when the hub stopped may have paid, so it is not done again.
+async function once (entry, name, fn) {
+  const step = entry.steps[name]
+  if (step === 'started') throw new Error(`${name} was under way when the hub stopped, and is not sent twice: ask again`)
+  if (step) return step.v
+  entry.steps[name] = 'started'
+  keep()
+  try {
+    const v = await fn()
+    entry.steps[name] = { v }
+    return v
+  } catch (err) {
+    delete entry.steps[name] // it threw: taken as not done, and tried again
+    throw err
+  } finally {
+    keep()
+  }
 }
 
-async function sponsor (device) {
+// waits for a transaction by its hash: the one sent now, or in an earlier try
+async function mined (hash) {
+  const receipt = await provider.waitForTransaction(hash, 1, 120000)
+  if (!receipt || receipt.status !== 1) throw new Error(`transaction ${hash} failed`)
+}
+
+async function faucet (address, entry) {
+  const gas = await once(entry, 'gas', async () => (await wallet.sendTransaction({ to: address, value: parseEther(DRIP_GAS) })).hash)
+  await mined(gas)
+  const mint = await once(entry, 'mint', async () => (await token.mint(address, DRIP_TOKEN)).hash)
+  await mined(mint)
+  return { gas: DRIP_GAS, token: DRIP_TOKEN.toString(), txs: [gas, mint] }
+}
+
+async function sponsor (device, entry) {
   const pay = 1000000n
   const budget = pay * SPONSOR_UNITS
-  await (await token.mint(wallet.address, budget * 2n + 10000000n)).wait()
+  await once(entry, 'fund', async () => (await (await token.mint(wallet.address, budget * 2n + 10000000n)).wait()).hash)
   const jobs = {}
   for (const [k, terms] of [['verify', verifyJob({ window: 20 })], ['store', storeJob({ window: 20 })]]) {
     // settled in Merkle batches of 6 units: one transaction pays for six
-    jobs[k] = await postJob(registry, wallet, { ...terms, device, pay, quorum: 2, budget, batchUnits: 6 })
+    jobs[k] = await once(entry, k, () => postJob(registry, wallet, { ...terms, device, pay, quorum: 2, budget, batchUnits: 6 }))
   }
   return { jobs, units: SPONSOR_UNITS.toString() }
+}
+
+// tells the site how a request went; until it has heard, the entry stays
+async function answer (id) {
+  await hubCall('done', { id: Number(id), ...doing[id].out })
+  delete doing[id]
+  keep()
 }
 
 let working = false
@@ -235,25 +286,34 @@ async function serve () {
   if (working) return
   working = true
   try {
+    // answers the site did not get last time
+    for (const id of Object.keys(doing)) if (doing[id].out) await answer(id)
     const { requests } = await hubCall('take')
     for (const r of requests) {
-      try {
-        const run = () => r.kind === 'faucet' ? faucet(r.target) : r.kind === 'enroll' ? (depin ? depin.enroll(r.target) : Promise.reject(new Error('no DePIN network here'))) : sponsor(r.target)
-        // once more after an error, with the nonce read from the chain again
-        const result = await run().catch(async (err) => {
-          log(`${r.kind} ${r.target.slice(0, 14)}…: ${err.error?.message || err.shortMessage || err.message}; trying again`)
+      const entry = (doing[r.id] ??= { kind: r.kind, steps: {} })
+      if (!entry.out) {
+        try {
+          const run = () => r.kind === 'faucet' ? faucet(r.target, entry) : r.kind === 'enroll' ? (depin ? once(entry, 'enroll', () => depin.enroll(r.target)) : Promise.reject(new Error('no DePIN network here'))) : sponsor(r.target, entry)
+          // once more after an error, with the nonce read from the chain again;
+          // the steps already done are not done again
+          const result = await run().catch(async (err) => {
+            log(`${r.kind} ${r.target.slice(0, 14)}…: ${err.error?.message || err.shortMessage || err.message}; trying again`)
+            wallet.reset()
+            await new Promise((resolve) => setTimeout(resolve, 3000))
+            return run()
+          })
+          entry.out = { ok: true, result }
+          log(`${r.kind} ${r.target.slice(0, 14)}… done`)
+        } catch (err) {
           wallet.reset()
-          await new Promise((resolve) => setTimeout(resolve, 3000))
-          return run()
-        })
-        await hubCall('done', { id: r.id, ok: true, result })
-        log(`${r.kind} ${r.target.slice(0, 14)}… done`)
-      } catch (err) {
-        wallet.reset()
-        const why = err.error?.message || err.shortMessage || err.message
-        await hubCall('done', { id: r.id, ok: false, result: { error: why } }).catch(() => {})
-        log(`${r.kind} ${r.target.slice(0, 14)}… failed: ${why}`)
+          const why = err.error?.message || err.shortMessage || err.message
+          entry.out = { ok: false, result: { error: why } }
+          log(`${r.kind} ${r.target.slice(0, 14)}… failed: ${why}`)
+        }
+        keep()
       }
+      // an answer that does not get through is sent again next time
+      await answer(r.id).catch((err) => log(`${r.kind} ${r.target.slice(0, 14)}…: ${err.message}`))
     }
   } catch (err) {
     log('queue: ' + err.message)

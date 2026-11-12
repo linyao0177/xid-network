@@ -5,13 +5,19 @@
 //   dist/docs/index.html    docs/docs.md rendered into docs/template.html, with a
 //                           contents sidebar made from its headings
 //   dist/404.html, dist/_headers
+//   dist/dl/                the release files (firmware, node tarballs, install.sh,
+//                           SHA256SUMS), from the repository's dist/
+//   dist/network/, dist/depin/, dist/testnet.json   the public testnet's pages
 //
 // The three pages are written as claude.ai artifacts: no <!doctype>/<head>/<body>,
 // and links to each other as artifact URLs. Published to the site, each gets a full
 // document, its own title and description, and site paths for those links.
 //
 // usage: npm run build      (then npm run deploy, see README.md)
+//        node build.mjs --release   as npm run deploy does: stops without a whole
+//                                   release, so the site never goes out without /dl/
 
+import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { marked } from 'marked'
@@ -127,6 +133,27 @@ ${body}
 
 // ---- build ----------------------------------------------------------------------
 
+// The release files (tools/release/release.sh https://iot.xid.network/dl/node puts
+// them in the repository's dist/): firmware, node tarballs, checksums. The docs
+// link to /dl/ and operators install from it, so a build to deploy (--release)
+// stops without them, or with a file that is not the one SHA256SUMS names.
+const release = path.join(here, '..', 'dist')
+function releaseProblem () {
+  if (!fs.existsSync(path.join(release, 'SHA256SUMS'))) return 'no release in ../dist'
+  const sums = fs.readFileSync(path.join(release, 'SHA256SUMS'), 'utf8').split('\n').filter(Boolean).map((l) => l.split(/\s+/))
+  if (!sums.some(([, f]) => f.startsWith('firmware/')) || !sums.some(([, f]) => f.startsWith('node/'))) return '../dist/SHA256SUMS names no firmware or no node package'
+  for (const [sum, f] of sums) {
+    if (!fs.existsSync(path.join(release, f))) return `../dist/${f} is missing`
+    if (crypto.createHash('sha256').update(fs.readFileSync(path.join(release, f))).digest('hex') !== sum) return `../dist/${f} is not the file in SHA256SUMS`
+  }
+  return null
+}
+const problem = releaseProblem()
+if (problem && process.argv.includes('--release')) {
+  console.error(`${problem}: run tools/release/release.sh https://iot.xid.network/dl/node first. Nothing was built.`)
+  process.exit(1)
+}
+
 fs.rmSync(dist, { recursive: true, force: true })
 const docs = renderDocs()
 fs.writeFileSync(path.join(here, 'docs', 'index.html'), docs.html) // the docs artifact's file
@@ -161,14 +188,12 @@ write('404.html', `<!doctype html>
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0d1026;color:#f4f4f8;font:17px/1.6 Manrope,Helvetica,Arial,sans-serif;text-align:center;padding:24px}a{color:#8ea3ff}h1{font-size:44px;margin:0 0 8px}</style>
 </head><body><div><h1>Nothing here</h1><p>That page does not exist. Try the <a href="/">home page</a> or the <a href="/docs/">docs</a>.</p></div></body></html>
 `)
-// the release files (tools/release/release.sh https://iot.xid.network/dl/node puts
-// them in the repository's dist/): firmware, node tarballs, checksums
-const release = path.join(here, '..', 'dist')
-if (fs.existsSync(path.join(release, 'SHA256SUMS'))) {
+// the release files, as /dl/
+if (!problem) {
   for (const d of ['firmware', 'node']) fs.cpSync(path.join(release, d), path.join(dist, 'dl', d), { recursive: true })
   fs.copyFileSync(path.join(release, 'SHA256SUMS'), path.join(dist, 'dl', 'SHA256SUMS'))
 } else {
-  console.error('no release in ../dist: run tools/release/release.sh https://iot.xid.network/dl/node first (the docs link to /dl/)')
+  console.error(`${problem}: built WITHOUT /dl/, to look at the pages only. Do not deploy this (npm run deploy will not).`)
 }
 // the public testnet: chain, contracts, network name, verifiers and nodes
 // (boat-node init --testnet reads it), and its live page

@@ -749,13 +749,14 @@ No single node is trusted with anything: a device's data is checked against the 
 | A node signs two results for one unit | Anyone can submit both signatures to `slashDoubleWork` |
 | A device is pointed at fake nodes | It trusts a node list only when 2 of its 3 verifiers signed the same one |
 | Nodes collude to drain a job | Assignment is fixed by hash, not chosen; a job pays at most `perEpoch` units an epoch |
+| Nodes settle a job that is not theirs | The contract cannot compute the assignment, so it names the signers of every settlement; a device's watchers check them against the plan, and a signer that was not assigned is slashed and loses the epoch's rewards |
 | An operator runs away before a slash | Stake that is unbonding or undelegated stays slashable until it leaves |
 | A sybil flood of verifiers | Verifier votes are weighted by stake and count only from the epoch after joining |
 | Someone reads private data | Sealed readings are encrypted; only readers the device named get the key |
 
 An independent review of the contracts found three high, three medium and three low findings. Among the high ones were a reporter able to profit from reporting itself, delegators leaving to escape a slash, and cheap verifiers outvoting real ones. All are fixed and covered by tests, and Foundry invariant tests (500 runs of 150 calls) hold. There has been no third-party audit yet, and the contracts run on testnets only.
 
-What the design does not stop: a quorum of the nodes assigned to a job, together with its watchers, can agree on a wrong result. Raising the quorum and the number of watchers makes that more expensive.
+What the design does not stop: a quorum of the nodes assigned to a job, together with its watchers, can agree on a wrong result. Raising the quorum and the number of watchers makes that more expensive. And the check on who settled comes after the fact: nodes that were not assigned can settle units until the watchers slash them, and what they earned in that epoch is taken back with the slash, but what the job paid for those units is not returned to it.
 
 ### Status
 

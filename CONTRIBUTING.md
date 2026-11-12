@@ -1,14 +1,17 @@
 # Contributing
 
-Thanks for helping. This repository has three parts, and each has its own tests:
+Thanks for helping. This repository has four parts, and each has its own tests:
 
 | Part | Where | Tests |
 | --- | --- | --- |
 | Contracts and the node | `packages/boat-registry` | `npm test` (needs `anvil` from Foundry); `forge test` for the contracts' invariants |
+| The DePIN toolkit | `packages/xid-depin` | `npm test`; `forge test` for its contracts |
 | MQTT over HyperDHT, storage, clients | `packages/boat-mqtt-node` | `npm test` |
 | Device components and firmware | `components/`, `examples/` (ESP-IDF 5.5) | `idf.py build`; on a board, the docs' [Quick Start](https://iot.xid.network/docs/#quick-start) step 10 |
 
 HyperDHT in C, `hdht_mqtt`, `uart_module`, `boat-peer` and `boat-ota` live in [hyperdht-esp32](https://github.com/linyao0177/hyperdht-esp32) (the `third_party/hyperdht-esp32` submodule); changes to them go there.
+
+Once after cloning, at the repository root: `npm run setup` (it installs every node package in the order they depend on each other). `npm test` there runs all three node packages' tests, `npm run test:sol` the contracts'. CI (`.github/workflows/ci.yml`) runs the same on every pull request.
 
 ## Before you send a pull request
 

@@ -269,6 +269,10 @@ export class Oracle extends EventEmitter {
     }
     if (this.closed) return
     if (!sheets.some((s) => s.operator === getAddress(this.node.operator.address))) return this.log(`epoch ${e}: its own sheets are not in, not signing`)
+    // with the sheets of fewer than most of the assigned oracles, "most
+    // sheets hold it" would be this oracle's word alone (cut off from the
+    // others, it would sign whatever its own sheet says)
+    if (sheets.length < Math.floor(assigned.size / 2) + 1) return this.log(`epoch ${e}: sheets of ${sheets.length} of ${assigned.size} oracles only, not signing`)
     const devices = [...this.devices].filter(([, d]) => this.inEpoch(d, e)).map(([did]) => did)
     const emission = await this.network.emission(e)
     const tree = scoreEpoch({ config: this.config, net: this.net, epoch: e, start: this.epochStart(e), emission, devices, sheets: sheets.map((s) => ({ ...s, devices: s.devices })) })

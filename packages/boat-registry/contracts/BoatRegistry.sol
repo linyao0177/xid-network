@@ -12,7 +12,6 @@ interface IERC20 {
 // - Nodes: who runs one, with what stake, in which roles (forward, store,
 //   verify, compute), under which HyperDHT key. Stake is an ERC-20 (a
 //   stablecoin), bonded until an unbonding period has passed.
-// - Anchors: verifier nodes post the Merkle roots of the verdicts they signed.
 // - Slashing. Devices and nodes sign with Ed25519, which this chain cannot
 //   check, so a node's statements that can cost it its stake are also signed
 //   with its operator key (EIP-191 over a hash):
@@ -27,7 +26,11 @@ interface IERC20 {
 //   compute them), with a budget. Nodes in that role do it off-chain, unit by
 //   unit (a window of the device's sequence numbers), and sign their result
 //   for each unit; a unit is settled when `quorum` active nodes signed the
-//   same result, and they share its pay.
+//   same result, and they share its pay. Which nodes work on a job is
+//   computed off-chain, the same by every node (lib/assign.js), and this
+//   contract cannot compute it: it names the signers it counted for every
+//   settlement (SettledBy), and the verifiers slash one that was not
+//   assigned to the job (lib/watch.js, "unassigned").
 // - Batches: a job posted with postBatchJob settles a batch of its units at a
 //   time (units 0..b-1 of a boot, then b..2b-1, ...). The nodes that agree
 //   sign one statement over the batch's Merkle root of (unit, result) and how
@@ -167,6 +170,10 @@ contract BoatRegistry {
     event BatchJob(uint256 indexed id, uint16 batchUnits);
     event JobSpent(uint256 indexed id, uint256 left);
     event BatchSettled(uint256 indexed id, uint64 indexed batch, bytes32 root, uint32 units, uint256 signers, uint256 pay);
+    // the signers counted for a settlement (a unit, or a batch of a batch
+    // job): the nodes that share its pay, or for a forward job the verifiers
+    // that witnessed it. Watchers check them against the assignment
+    event SettledBy(uint256 indexed id, uint64 indexed unit, address[] signers);
 
     constructor(IERC20 token_, uint256 minStake_, uint64 unbonding_, uint16 quorumBps_, uint64 epochLength_, uint64 jobNotice_, uint256 jobFee_, uint64 planParams_) {
         require(epochLength_ > 0, "epoch");
@@ -495,6 +502,7 @@ contract BoatRegistry {
         for (uint256 i = 0; i < n; i++) _credit(paid[i], share);
         treasury += j.pay - share * n;
         emit Settled(id, unit, result, n, j.pay);
+        _by(id, unit, paid);
     }
 
     // a forward job's unit: the node the messages went through signs
@@ -511,13 +519,14 @@ contract BoatRegistry {
         Node storage f = nodes[forwarder];
         require(f.active && f.stake >= minStake && f.roles & FORWARD != 0, "forwarder");
         bytes32 result = keccak256(abi.encode(forwarder, root));
-        (, uint256 n, bool signed) = _signers(_eip191(workStatement(id, unit, result)), sigs, FORWARD, forwarder);
+        (address[] memory witnesses, uint256 n, bool signed) = _signers(_eip191(workStatement(id, unit, result)), sigs, FORWARD, forwarder);
         require(signed, "not signed by the forwarder");
         require(n >= j.quorum, "no quorum");
         settled[k] = result;
         _spend(id, j, 1);
         _credit(forwarder, j.pay);
         emit Settled(id, unit, result, n + 1, j.pay);
+        _by(id, unit, witnesses);
     }
 
     // a unit to settle in settleMany: forwarder != 0 makes it a forward job's
@@ -543,11 +552,18 @@ contract BoatRegistry {
         }
     }
 
+    // (one place: the event's encoding, four times over, did not fit the
+    // contract's size)
+    function _by(uint256 id, uint64 unit, address[] memory signers) internal {
+        emit SettledBy(id, unit, signers);
+    }
+
     // the signers of digest (distinct, sorted by address) that count: for a
     // forward job (role FORWARD), the voting verifiers other than the forwarder,
-    // and whether the forwarder signed; else the active nodes of the role
-    function _signers(bytes32 digest, bytes[] calldata sigs, uint8 role, address forwarder) internal view returns (address[] memory paid, uint256 n, bool forwarderSigned) {
-        paid = new address[](sigs.length);
+    // and whether the forwarder signed; else the active nodes of the role.
+    // `counted` holds exactly those n signers
+    function _signers(bytes32 digest, bytes[] calldata sigs, uint8 role, address forwarder) internal view returns (address[] memory counted, uint256 n, bool forwarderSigned) {
+        counted = new address[](sigs.length);
         address last = address(0);
         for (uint256 i = 0; i < sigs.length; i++) {
             address s = _recover(digest, sigs[i]);
@@ -555,12 +571,14 @@ contract BoatRegistry {
             last = s;
             if (role == FORWARD) {
                 if (s == forwarder) forwarderSigned = true;
-                else if (_votes(s)) n++;
+                else if (_votes(s)) counted[n++] = s;
             } else {
                 Node storage node = nodes[s];
-                if (node.active && node.stake >= minStake && node.roles & role != 0) paid[n++] = s;
+                if (node.active && node.stake >= minStake && node.roles & role != 0) counted[n++] = s;
             }
         }
+        // (the array was made for every signature: cut to the ones counted)
+        assembly ("memory-safe") { mstore(counted, n) }
     }
 
     // ---- batches ---------------------------------------------------------------------
@@ -594,6 +612,7 @@ contract BoatRegistry {
         (address[] memory paid, uint256 n, bool forwarderSigned) = _signers(_eip191(_batchStatement(id, batch, root, units, forwarder)), sigs, j.role, forwarder);
         require(n >= j.quorum, "no quorum");
         settled[k] = root;
+        _by(id, batch, paid);
         _spend(id, j, units);
         uint256 total = j.pay * units;
         if (fwd) {

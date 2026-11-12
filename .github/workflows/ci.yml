@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: node packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: foundry-rs/foundry-toolchain@v1 # anvil, for the chain tests
+      - run: npm run setup
+      - run: npm run test:mqtt
+      - run: npm run test:registry
+      - run: npm run test:depin
+
+  contracts:
+    name: contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FOUNDRY_OFFLINE: 'false' # foundry.toml builds offline; here solc is fetched
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: npm run test:sol
+      # the ABI and bytecode the JS uses are committed: they must be what the
+      # contracts build to
+      - name: artifacts are up to date
+        run: |
+          (cd packages/boat-registry && node scripts-build.mjs)
+          (cd packages/xid-depin && node scripts-build.mjs)
+          git diff --exit-code -- packages/boat-registry/artifacts packages/xid-depin/artifacts
+
+  syntax:
+    name: syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: every JavaScript file parses
+        run: |
+          git ls-files '*.js' '*.mjs' | while read -r f; do node --check "$f" || exit 1; done
+      - name: shell scripts parse
+        run: |
+          git ls-files '*.sh' | while read -r f; do bash -n "$f" || exit 1; done

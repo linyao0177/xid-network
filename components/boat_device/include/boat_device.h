@@ -16,10 +16,12 @@
 //   The public key is its address on HyperDHT, its MQTT identity and its DID
 //   (did:mw:<key>), and only it may publish under d/<key>/.
 // - Nodes: the staked nodes a quorum of its trusted verifiers lists
-//   (components/hdht_mqtt node list), else the nodes announced under
-//   `network`; it moves to another when one goes away, and names the node it
-//   is on in its DID record so apps and nodes find it. With `node`, it dials
-//   that one first when it is among them (one near it: short round trips).
+//   (components/hdht_mqtt node list); without verifiers, the nodes announced
+//   under `network`. With verifiers it takes no other node: while no list
+//   can be read it stays offline and tries again every minute. It moves to
+//   another node when one goes away, and names the node it is on in its DID
+//   record so apps and nodes find it. With `node`, it dials that one first
+//   when it is among them (one near it: short round trips).
 // - Messages: every publish is signed (hdht_mqtt_sign), with a sequence
 //   number that rises across reboots (a boot counter in NVS), so anyone
 //   checks it whatever node it came through.
@@ -28,7 +30,8 @@
 // - Receipts: the node's signed word on what it got, checked on the device.
 // - Sealed readings (boat_seal.h): with readers set, the data key is sealed
 //   to each and published at d/<key>/keys/<id>, a new one every boot and
-//   every 1000 sealed messages.
+//   every 1000 sealed messages. A reading is sealed and published only
+//   once its key's envelope was.
 //
 // Threads: hdht runs on a task of its own; the calls here may be made from
 // any other task (they queue for esp-mqtt), not from on_message.
@@ -57,6 +60,8 @@ typedef struct {
   uint32_t hdht_stack;           // default 20480
 } boat_device_config_t;
 
+// An error (NVS's) when the seed or the boot counter cannot be read or
+// kept: the device does not start, and signs nothing.
 esp_err_t
 boat_device_start (const boat_device_config_t *cfg);
 
@@ -76,7 +81,8 @@ boat_device_publish (const char *name, const void *data, size_t len);
 esp_err_t
 boat_device_publish_retained (const char *name, const void *data, size_t len);
 
-// Sealed to the readers, then signed. ESP_ERR_INVALID_STATE without readers.
+// Sealed to the readers, then signed. ESP_ERR_INVALID_STATE without readers,
+// and the error of the key envelope's publish when that did not go out.
 esp_err_t
 boat_device_publish_sealed (const char *name, const void *data, size_t len);
 
@@ -91,8 +97,8 @@ boat_device_sign (const void *msg, size_t len, uint8_t sig[64]);
 
 typedef struct {
   uint32_t published;    // signed messages esp-mqtt took this boot
-  uint32_t receipts_ok;  // receipts that checked out
-  uint32_t receipts_bad;
+  uint32_t receipts_ok;  // signed by the node, naming nothing the device did not send this boot
+  uint32_t receipts_bad; // a bad signature, or naming messages it never sent
   uint32_t connects;
 } boat_device_stats_t;
 

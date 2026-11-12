@@ -92,9 +92,11 @@ try {
   const tooBig = await reverts(reg.connect(relay).settleBatch(job, big.batch, big.root, big.units, ZeroAddress, await sign([s1, s2], job, big)))
   const b1 = batchOfUnits(1, 6)
   const alone = await reverts(reg.connect(relay).settleBatch(job, b1.batch, b1.root, b1.units, ZeroAddress, await sign([s1], job, b1)))
+  // (signatures over another count recover to addresses of nobody, in any
+  // order: refused as unsorted, or as no quorum, as it falls)
   const lying = await reverts(reg.connect(relay).settleBatch(job, b1.batch, b1.root, 5, ZeroAddress, await sign([s1, s2], job, b1)))
   const verifiersSign = await reverts(reg.connect(relay).settleBatch(job, b1.batch, b1.root, b1.units, ZeroAddress, await sign([v1, v2], job, b1)))
-  check('more units than the batch size, one signer, a changed count or signers of another role: refused', /batch/.test(tooBig) && /no quorum/.test(alone) && /no quorum/.test(lying) && /no quorum/.test(verifiersSign))
+  check('more units than the batch size, one signer, a changed count or signers of another role: refused', /batch/.test(tooBig) && /no quorum/.test(alone) && /no quorum|sorted/.test(lying) && /no quorum/.test(verifiersSign))
 
   // the job's rate per epoch counts units, not batches
   const slow = await postJob(reg, payer, { role: ROLES.STORE, device, spec: SPEC.store, params: { window: 20 }, pay: PAY, quorum: 2, budget: 100n * PAY, perEpoch: 10, batchUnits: 6 })
