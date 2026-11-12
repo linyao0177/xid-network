@@ -41,7 +41,10 @@ export class ChainView {
   // registry: the BoatRegistry contract (with a provider); fromBlock: where to
   // start reading (null: the block it was deployed in, found by its code);
   // minStake: the registry's; file: where the state is kept (null: memory only)
-  constructor ({ registry, provider = null, fromBlock = null, step = 10, lag = 2, chunk = 5000, minStake = 0n, file = null, spentHoldS = 86400 }) {
+  // also: names of other events of the registry to hand on as they are read
+  // (taken with drain()): the settlements, for the audit (lib/audit.js),
+  // from the same logs, so the chain is not read twice
+  constructor ({ registry, provider = null, fromBlock = null, step = 10, lag = 2, chunk = 5000, minStake = 0n, file = null, spentHoldS = 86400, also = [] }) {
     this.registry = registry
     this.provider = provider || registry.runner.provider
     this.step = step
@@ -54,6 +57,8 @@ export class ChainView {
     this._logs = new Map() // from:to -> logs, read in a sync that failed later (L3)
     this.topics = EVENTS.map((e) => registry.interface.getEvent(e).topicHash)
     this.topicSet = new Set(this.topics)
+    this.alsoSet = new Set(also.map((e) => registry.interface.getEvent(e).topicHash))
+    this.tapped = [] // logs of the `also` events, up to the as-of block
     this.state = this._fresh()
     this.version = 0 // changes when what the plan depends on changes
     this._load()
@@ -85,6 +90,13 @@ export class ChainView {
 
   get block () { return this.state.block }
 
+  // the logs of the `also` events read since the last call, in chain order
+  drain () {
+    const logs = this.tapped
+    this.tapped = []
+    return logs
+  }
+
   // reads the events up to the as-of block of the current head; returns that block
   async sync () {
     if (this._syncing) return this._syncing
@@ -113,6 +125,7 @@ export class ChainView {
     if (next.block < 0) next.block = (this.fromBlock ?? await deployBlockOf(this.provider, this.registry.target, asOf)) - 1
     const touched = new Set() // nodes slashed in these blocks: read as of asOf
     let events = 0
+    const tapped = []
     for (let from = next.block + 1; from <= asOf;) {
       const to = Math.min(asOf, from + this.chunk - 1)
       // (logs read before a failure are kept for the next try: a first sync
@@ -132,11 +145,12 @@ export class ChainView {
           }
           throw err
         }
-        logs = logs.filter((l) => this.topicSet.has(l.topics[0]))
+        logs = logs.filter((l) => this.topicSet.has(l.topics[0]) || this.alsoSet.has(l.topics[0]))
         logs.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.index - b.index))
         this._logs.set(from + ':' + to, logs)
       }
       for (const log of logs) {
+        if (this.alsoSet.has(log.topics[0])) { tapped.push(log); continue }
         const e = this.registry.interface.parseLog(log)
         // when a job ran dry, by the chain's clock
         if (e && e.name === 'JobSpent') e.time = (await this.provider.getBlock(log.blockNumber)).timestamp
@@ -159,6 +173,9 @@ export class ChainView {
     const openBefore = this._openKey()
     this.state = next
     this._logs.clear()
+    // (a first sync over a long history hands on its last ones only)
+    for (const log of tapped) this.tapped.push(log)
+    if (this.tapped.length > 20000) this.tapped.splice(0, this.tapped.length - 20000)
     this._prune()
     // the plan changes only with events, or with time closing or releasing a
     // job: not with every block (a local chain makes one per transaction)

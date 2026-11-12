@@ -15,6 +15,9 @@
 //                  that rank first by keccak(verifier, store, job, unit), so
 //                  the work spreads over the verifiers and anyone can tell
 //                  whose turn it was
+//   unassigned     a node whose signature settled a unit of a job it was not
+//                  assigned to (lib/audit.js): read from the chain, so the
+//                  evidence is the settlement's transaction
 //
 // A fault is published at d/<node>/faults/<reason> with the judge's signature
 // on the slash (slashStatementOf, BoatRegistry._slashStatement) and the evidence. Every other
@@ -54,7 +57,7 @@ export class Watchtower extends EventEmitter {
   // that judge the work of its jobs and spot-check their stores; jobOf(id): a job this node does
   // not watch (to judge a fault another verifier sends); send(fault): to every
   // verifier, not only those at the device's home node
-  constructor ({ dht, registry, operator, ctx, jobs, publish, minStake, submitBackupMs = 20000, spotters = 2, spotEvery = 10, watchers = 3, spotDelayMs = 5000, tx = (fn) => fn(), jobOf = null, send = null }) {
+  constructor ({ dht, registry, operator, ctx, jobs, publish, minStake, submitBackupMs = 20000, spotters = 2, spotEvery = 10, watchers = 3, spotDelayMs = 5000, tx = (fn) => fn(), jobOf = null, send = null, audit = null }) {
     super()
     this.tx = tx
     this.dht = dht
@@ -70,6 +73,7 @@ export class Watchtower extends EventEmitter {
     this.watchers = watchers
     this.jobOf = jobOf
     this.send = send
+    this.audit = audit // lib/audit.js: who settled what, and who was assigned
     this.keyring = null // set by the node: sealed readings it may read
     this._watchers = new Map() // device -> { key (the verifiers), list }
     this._verifiers = { at: 0, list: [] }
@@ -114,12 +118,16 @@ export class Watchtower extends EventEmitter {
     // two results for one unit
     const k = w.operator + ':' + w.job + ':' + w.unit
     const before = this.seen.get(k)
+    // what two results for one unit are told and proven by, and no more: the
+    // whole message, with every leaf of its unit, 20,000 times over, was most
+    // of what a busy verifier's memory grew by
+    const slim = { job: w.job, unit: w.unit, operator: w.operator, result: w.result, signature: w.signature }
     if (before && before.result !== w.result) {
       if (signerOf(this.ctx, before) && signerOf(this.ctx, w)) return this._doubleWork(before, w)
-      if (!signerOf(this.ctx, before)) this.seen.set(k, w) // keep the genuine one
+      if (!signerOf(this.ctx, before)) this.seen.set(k, slim) // keep the genuine one
       return
     }
-    if (!before) this.seen.set(k, w)
+    if (!before) this.seen.set(k, slim)
     if (this.seen.size > 20000) this.seen.delete(this.seen.keys().next().value)
     if (w.operator === this.operator.address) return
     // a DePIN epoch: its result is the root of a score anyone can run again
@@ -144,6 +152,12 @@ export class Watchtower extends EventEmitter {
       const turn = watchers.filter((v) => v !== w.operator).map((v) => [score(v), v]).sort((a, b) => (a[0] < b[0] ? -1 : 1)).slice(0, this.spotters).map(([, v]) => v)
       if (turn.includes(this.operator.address) && signerOf(this.ctx, w)) await this._spotCheck(job, w)
     }
+  }
+
+  // a device with no job left here: what was kept for it goes
+  forget (device) {
+    this.messages.delete(device)
+    this._watchers.delete(device)
   }
 
   // the verifiers that watch a device's jobs: the first `watchers` by
@@ -204,8 +218,25 @@ export class Watchtower extends EventEmitter {
     return null
   }
 
+  // signers of a settlement that were not assigned to its job (Auditor.scan)
+  async unassigned (found) {
+    for (const s of found) {
+      await this._raise('unassigned', { job: s.job, unit: s.unit, operator: s.operator }, { tx: s.tx })
+    }
+  }
+
   // judges a fault from its evidence alone (and a spot check of our own)
   async rejudge (f) {
+    if (f.kind === 'unassigned') {
+      // from the chain: the transaction settled the unit with the node's
+      // signature, and our plans of that time did not have it on the job
+      const w = f.work
+      if (!this.audit || w.operator !== f.operator || !Number.isSafeInteger(w.job) || !/^\d{1,20}$/.test(String(w.unit))) return false
+      if (!f.evidence || !/^0x[0-9a-f]{64}$/.test(f.evidence.tx || '')) return false
+      const s = await this.audit.settlementOf(f.evidence.tx, w.job, String(w.unit)).catch(() => null)
+      if (!s || !s.signers || !s.signers.includes(f.operator)) return false
+      return (await this.audit.assignedAt(w.job, f.operator, s.block)) === false
+    }
     const job = this.jobs.get(f.work.job) || (this.jobOf ? await this.jobOf(f.work.job).catch(() => null) : null)
     if (!job || !signerOf(this.ctx, f.work) || f.work.operator !== f.operator) return false
     if (f.kind === 'store-failed') {
@@ -279,6 +310,7 @@ export class Watchtower extends EventEmitter {
     if (this.faults.has(reason)) return
     const f = { v: 1, kind, operator: w.operator, job: w.job, unit: w.unit, amount: String(this.amount), reason, work: w, evidence: evidence || null }
     this.faults.set(reason, { fault: f, sigs: new Map(), done: false })
+    this._trimFaults()
     this.stats.faults++
     this.emit('fault', { kind, operator: w.operator, job: w.job, unit: w.unit })
     await this._agree(f)
@@ -311,6 +343,7 @@ export class Watchtower extends EventEmitter {
       const { judge: _j, signature: _s, ...f } = msg
       entry = { fault: f, sigs: new Map(), done: false }
       this.faults.set(msg.reason, entry)
+      this._trimFaults()
       entry.sigs.set(judge, msg.signature)
       this.stats.agreed++
       this.emit('agree', { kind: msg.kind, operator: msg.operator, judge })
@@ -319,6 +352,16 @@ export class Watchtower extends EventEmitter {
     }
     entry.sigs.set(judge, msg.signature)
     await this._maybeSubmit(msg.reason)
+  }
+
+  // faults are kept so that one is raised and submitted once; the oldest
+  // that are done go (seen again, the registry says they were used)
+  _trimFaults () {
+    if (this.faults.size <= 5000) return
+    for (const [k, e] of this.faults) {
+      if (this.faults.size <= 4000) break
+      if (e.done) this.faults.delete(k)
+    }
   }
 
   async _maybeSubmit (reason, backup = false, attempt = 0) {

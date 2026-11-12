@@ -27,6 +27,7 @@ import { attach, attachReads, register, ROLES, TEST_TOKEN, decodePlan } from './
 import { ReadSeller } from './reads.js'
 import { readJob, Worker, Settler, ROLE_NAME } from './work.js'
 import { Watchtower } from './watch.js'
+import { Auditor } from './audit.js'
 import { roleKeyPair, putRecord, buildNodeList, publishNodeList, readCard, hex } from './nodelist.js'
 
 const abi = AbiCoder.defaultAbiCoder()
@@ -43,7 +44,7 @@ export class BoatNode extends EventEmitter {
     storage = './boat-node', network, maxJobs = 20, jobPollMs = 15000, listMs = 300000,
     settleDelayMs = 5000, backupMs = 20000, rewardMs = 600000, autoWithdraw = true, statusFile = null,
     spotters = 2, spotEvery = 10, plugins = null, lie = null, drop = null, reads = null, readPrice = null, metricsPort = null, spare = null, watchers = 3,
-    overloadMs = 2000, loadCheckMs = 60000, fromBlock = null
+    overloadMs = 2000, loadCheckMs = 60000, fromBlock = null, auditGraceSteps = 64
   }) {
     super()
     this.dht = dht || new HyperDHT({ bootstrap })
@@ -64,6 +65,7 @@ export class BoatNode extends EventEmitter {
     this.calm = 0 // load checks in a row well under overloadMs
     // where the registry's events start (null: found by a search)
     this.fromBlock = fromBlock
+    this.auditGraceSteps = auditGraceSteps // lib/audit.js
     this.jobPollMs = jobPollMs
     this.listMs = listMs
     this.settleDelayMs = settleDelayMs
@@ -136,7 +138,9 @@ export class BoatNode extends EventEmitter {
       step: plan.step,
       lag: plan.lag,
       minStake: this.minStake,
-      file: path.join(this.storage, `chain-${this.ctx.registry.toLowerCase()}.json`)
+      file: path.join(this.storage, `chain-${this.ctx.registry.toLowerCase()}.json`),
+      // a verifier also reads the settlements, to audit them
+      also: this.wantRoles === null || (this.wantRoles & ROLES.VERIFY) ? Auditor.EVENTS : []
     })
 
     // registration
@@ -218,6 +222,7 @@ export class BoatNode extends EventEmitter {
       if (this.roles & ROLES.VERIFY) this.slashDoubleBatch(d).catch((err) => this.log('slash double batch: ' + (err.shortMessage || err.message)))
     })
     if (this.roles & ROLES.VERIFY) {
+      this.auditor = new Auditor({ registry: this.registry, ctx: this.ctx, chain: this.chain, graceSteps: this.auditGraceSteps, sync: () => this.syncChain() })
       this.watch = new Watchtower({
         dht: this.dht,
         registry: this.registry,
@@ -232,7 +237,8 @@ export class BoatNode extends EventEmitter {
         watchers: this.watchers,
         tx: this.tx,
         jobOf: (id) => this.jobOf(id),
-        send: (msg) => this.sendFault(msg).catch(() => {})
+        send: (msg) => this.sendFault(msg).catch(() => {}),
+        audit: this.auditor
       })
       await this.listenFaults()
       for (const e of ['fault', 'agree', 'disagree', 'slashed', 'spot-check']) this.watch.on(e, (x) => this.emit(e, x))
@@ -383,13 +389,30 @@ export class BoatNode extends EventEmitter {
     }
   }
 
+  // reads the chain up to the plan's block; a verifier remembers the plan
+  async syncChain () {
+    await this.chain.sync()
+    if (this.auditor) this.auditor.note(await this.plan())
+  }
+
+  // the settlements since the last look, of the jobs on devices this node
+  // watches: a signer that was not assigned is a fault (lib/audit.js)
+  async audit () {
+    const me = this.operator.address
+    const found = await this.auditor.scan(async (device) => (await this.watch.watchersOf(device)).includes(me))
+    if (found.length) await this.watch.unassigned(found)
+  }
+
   // open jobs: ours to work on, and every job to watch when we verify
   async pollJobs () {
-    await this.chain.sync().catch((err) => this.log('chain: ' + (err.shortMessage || err.message)))
+    await this.syncChain().catch((err) => this.log('chain: ' + (err.shortMessage || err.message)))
+    if (this.auditor) await this.audit().catch((err) => this.log('audit: ' + (err.shortMessage || err.message)))
     // jobs already seen: a node newly assigned to one (another left, or lowered
     // its capacity) starts on it; one no longer assigned (this node lowered its
     // capacity) stops, and the node it went to starts
-    for (const job of this.jobs.values()) {
+    for (const job of [...this.jobs.values()]) {
+      // closed (the chain view dropped it): nothing of it is needed again
+      if (this.chain.block >= 0 && job.id < this.chain.state.jobCount && !(job.id in this.chain.state.jobs)) { await this.retire(job); continue }
       if (!this.workers.has(job.id)) { if (await this.ensureWorkers(job)) this.replayOwn(job) } else if (job.role !== ROLES.FORWARD && !(await this.assigned(job, job.role))) {
         this.workers.delete(job.id)
         this._dropped = (this._dropped || 0) + 1
@@ -399,6 +422,9 @@ export class BoatNode extends EventEmitter {
     const waiting = [...this.waiting.values()]
     const count = Number(await this.registry.jobCount())
     for (; this.seenJobs < count; this.seenJobs++) {
+      // closed before the plan's block: not read at all (a node that starts
+      // on an old registry would read every job there ever was)
+      if (this.seenJobs < this.chain.state.jobCount && !(this.seenJobs in this.chain.state.jobs)) continue
       try {
         const job = await readJob(this.registry, this.seenJobs)
         waiting.push(job)
@@ -453,12 +479,6 @@ export class BoatNode extends EventEmitter {
     }
   }
 
-  // the units a worker signed, on disk (the last 512), so that a restart
-  // never signs one again with another result
-  // the batch statements this node signed for a job, on disk and synced
-  // before a statement is published: a restart sends the same one again and
-  // never signs another for the batch (slashDoubleBatch). It keeps the last
-  // 2,048; `floor` is the oldest kept, and batches before it are never signed.
   async slashDoubleBatch ({ job, batch, operator, a, b }, waitMs = Math.floor(Math.random() * 10000)) {
     await new Promise((resolve) => setTimeout(resolve, waitMs))
     const reason = keccak256(abi.encode(['string', 'uint256', 'uint64'], ['double-batch', job, batch]))
@@ -469,6 +489,10 @@ export class BoatNode extends EventEmitter {
     this.emit('slashed', { operator, kind: 'double-batch', tx: r.hash })
   }
 
+  // the batch statements this node signed for a job, on disk and synced
+  // before a statement is published: a restart sends the same one again and
+  // never signs another for the batch (slashDoubleBatch). It keeps the last
+  // 2,048; `floor` is the oldest kept, and batches before it are never signed.
   batchMemoryOf (id) {
     this._batchMem = this._batchMem || new Map()
     if (this._batchMem.has(id)) return this._batchMem.get(id)
@@ -517,22 +541,75 @@ export class BoatNode extends EventEmitter {
     return mem
   }
 
+  // a closed job: its workers stop, and when it was the last one on its
+  // device the device is no longer followed, nor its messages kept
+  async retire (job) {
+    const id = job.id
+    for (const w of this.workers.get(id) || []) if (w.close) await w.close().catch(() => {})
+    this.workers.delete(id)
+    this.jobs.delete(id)
+    this._jobCache.delete(id)
+    this._batchMem?.delete(id)
+    this.log(`job ${id} closed: left`)
+    if ([...this.jobs.values()].some((j) => j.device === job.device)) return
+    this.forwarding.delete(job.device)
+    this._following.delete(job.device)
+    if (this.watch) this.watch.forget(job.device)
+    if (this.follower.unfollow) await this.follower.unfollow(job.device).catch(() => {})
+  }
+
+  // the units a worker signed, on disk (the last 512), so that a restart
+  // never signs one again with another result (slashDoubleWork takes half the
+  // stake). Each unit is a line appended to <name>.log and synced before its
+  // signature leaves the node; now and then the log is folded into
+  // <name>.json. (Rewriting the whole file for every unit, unsynced, could
+  // lose the last units in a crash, and held up a busy node.)
   memoryOf (name) {
     const dir = this.signedDir
     const file = path.join(dir, name + '.json')
+    const log = path.join(dir, name + '.log')
     // unit -> { result, signature, forwarder } (or, written by older
     // versions, the result alone)
     let units = {}
-    try { units = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
+    try { units = JSON.parse(fs.readFileSync(file, 'utf8')) || {} } catch {}
+    let lines = 0
+    try {
+      const text = fs.readFileSync(log)
+      // a line cut short by a crash was never synced, so its unit was not
+      // published: cut off, or the next line would be appended to it and lost
+      const end = text.lastIndexOf(10) + 1
+      if (end < text.length) fs.truncateSync(log, end)
+      for (const line of text.subarray(0, end).toString().split('\n')) {
+        if (!line) continue
+        try { const [unit, signed] = JSON.parse(line); units[unit] = signed; lines++ } catch {}
+      }
+    } catch {}
+    const trim = () => {
+      const keys = Object.keys(units)
+      if (keys.length > 512) for (const k of keys.slice(0, keys.length - 512)) delete units[k]
+    }
+    trim()
+    const sync = (f, flags, data) => {
+      const fd = fs.openSync(f, flags)
+      try { fs.writeSync(fd, data); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+    }
+    const fold = () => {
+      sync(file + '.tmp', 'w', JSON.stringify(units))
+      fs.renameSync(file + '.tmp', file)
+      const d = fs.openSync(dir, 'r')
+      try { fs.fsyncSync(d) } catch {} finally { fs.closeSync(d) }
+      // (a crash here leaves lines the file already holds: read again, no harm)
+      fs.truncateSync(log, 0)
+      lines = 0
+    }
     return {
       get: (unit) => units[unit],
       entries: () => Object.entries(units),
       set: (unit, signed) => {
         units[unit] = signed
-        const keys = Object.keys(units)
-        if (keys.length > 512) for (const k of keys.slice(0, keys.length - 512)) delete units[k]
-        fs.writeFileSync(file + '.tmp', JSON.stringify(units))
-        fs.renameSync(file + '.tmp', file)
+        trim()
+        sync(log, 'a', JSON.stringify([unit, signed]) + '\n')
+        if (++lines >= 2048) fold()
       }
     }
   }
@@ -655,7 +732,14 @@ export class BoatNode extends EventEmitter {
 
   async jobOf (id) {
     if (this.jobs.has(id)) return this.jobs.get(id)
-    if (!this._jobCache.has(id)) this._jobCache.set(id, readJob(this.registry, id))
+    if (!this._jobCache.has(id)) {
+      // a read that fails is forgotten, so the next ask reads again: kept, one
+      // RPC hiccup would fail every later look at this job until a restart
+      const p = readJob(this.registry, id)
+      p.catch(() => { if (this._jobCache.get(id) === p) this._jobCache.delete(id) })
+      this._jobCache.set(id, p)
+      if (this._jobCache.size > 1000) this._jobCache.delete(this._jobCache.keys().next().value)
+    }
     return this._jobCache.get(id)
   }
 
@@ -828,6 +912,7 @@ export class BoatNode extends EventEmitter {
       }, {}),
       settled: this.settler.stats,
       watch: this.watch ? this.watch.stats : null,
+      audit: this.auditor ? this.auditor.stats : null,
       rewards: this.rewards ? Object.fromEntries(Object.entries(this.rewards).map(([k, v]) => [k, String(v)])) : null,
       clients: this.forward ? Object.keys(this.forward.usage()).length : null,
       backfilled: this.backfilled,
