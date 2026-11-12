@@ -37,9 +37,18 @@ export function open (publicKey, topic, msg) {
 
 // Checks messages under d/<key>/ against the key in the topic and refuses a
 // sequence number at or below the last one seen from that key on that topic.
+//
+// What it remembers is bounded, since keys and topics are free to make:
+// - maxTopics per key. Past that the topic idle longest is forgotten, and on
+//   topics not remembered the key's messages must be newer than what was
+//   forgotten (its floor): a key with ever new topics gives up nothing as
+//   long as its sequence numbers grow across them, and costs no one else.
+// - maxSenders keys. Past that the key idle longest is forgotten whole.
 export class SignedInbox {
-  constructor () {
-    this.last = new Map()
+  constructor ({ maxTopics = 1024, maxSenders = 100000 } = {}) {
+    this.maxTopics = maxTopics
+    this.maxSenders = maxSenders
+    this.senders = new Map() // key hex -> { last: Map(topic -> seq), floor }, the busiest last
   }
 
   // { ok, from, seq, payload, reason }
@@ -48,9 +57,22 @@ export class SignedInbox {
     if (!from) return { ok: false, reason: 'not under d/<key>/' }
     const m = open(Buffer.from(from, 'hex'), topic, msg)
     if (!m) return { ok: false, from, reason: 'bad signature' }
-    const last = this.last.get(topic)
-    if (last !== undefined && m.seq <= last) return { ok: false, from, seq: m.seq, reason: 'replayed' }
-    this.last.set(topic, m.seq)
+    let s = this.senders.get(from)
+    const last = s && s.last.get(topic)
+    if (s && (last !== undefined ? m.seq <= last : m.seq <= s.floor)) return { ok: false, from, seq: m.seq, reason: 'replayed' }
+    if (s) this.senders.delete(from) // (in time order: the busiest last)
+    else {
+      s = { last: new Map(), floor: -1n }
+      if (this.senders.size >= this.maxSenders) this.senders.delete(this.senders.keys().next().value)
+    }
+    this.senders.set(from, s)
+    s.last.delete(topic)
+    s.last.set(topic, m.seq)
+    if (s.last.size > this.maxTopics) {
+      const [old, seq] = s.last.entries().next().value
+      s.last.delete(old)
+      if (seq > s.floor) s.floor = seq
+    }
     return { ok: true, from, seq: m.seq, payload: m.payload }
   }
 }

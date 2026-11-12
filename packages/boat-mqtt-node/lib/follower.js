@@ -4,7 +4,7 @@
 // watch(filter) also takes what other clients of those nodes publish (other
 // nodes' work, say): 'peer' (sender hex, topic, payload), on every home node;
 // watchDevice(device, filter) does the same on one device's home node only,
-// and follows the device when it moves.
+// and follows the device when it moves. unfollow(device) gives all of it up.
 
 import { EventEmitter } from 'events'
 import { connect } from './client.js'
@@ -63,9 +63,53 @@ export class Follower extends EventEmitter {
     const c = await this.clients.get(h)
     await c.subscribeAsync(`d/${key}/${filter}`, { qos: 1 })
     for (const f of this.extra.get(key) || []) await c.subscribeAsync(f, { qos: 1 })
+    // unfollowed meanwhile: give back what was just subscribed
+    if (!this.devices.has(key)) {
+      await this._leave(key, h, filter)
+      return h
+    }
+    const before = this.homes.get(key)
+    const old = this.filters.get(key)
     this.homes.set(key, h)
     this.filters.set(key, filter)
+    // it moved, or is followed with another filter now: not twice
+    if (before && (before !== h || old !== filter)) await this._leave(key, before, old, before !== h)
     return h
+  }
+
+  // unsubscribes a device at one home node, and closes the connection to a
+  // home node that no followed device is at any more
+  async _leave (key, h, filter, extra = true) {
+    const p = this.clients.get(h)
+    const c = p && (await p.catch(() => null))
+    if (!c) return
+    const topics = [`d/${key}/${filter}`]
+    // (a filter watched on every home node stays, when another device needs it there)
+    if (extra) for (const f of this.extra.get(key) || []) if (!this.watching.has(f) && !this._shared(key, h, f)) topics.push(f)
+    await c.unsubscribeAsync(topics).catch(() => {})
+    if ([...this.homes.values()].includes(h) || this.clients.get(h) !== p) return
+    this.clients.delete(h)
+    c.end(true)
+  }
+
+  // whether another device at home node h has the same extra filter (watchDevice)
+  _shared (key, h, f) {
+    for (const [k, set] of this.extra) if (k !== key && set.has(f) && this.homes.get(k) === h) return true
+    return false
+  }
+
+  // stops following a device: its subscriptions at its home node, and what
+  // is kept for it here. Its messages are no longer handed on.
+  async unfollow (device) {
+    const key = hex(device)
+    if (!this.devices.delete(key)) return false
+    const h = this.homes.get(key)
+    const filter = this.filters.get(key)
+    this.homes.delete(key)
+    this.filters.delete(key)
+    if (h) await this._leave(key, h, filter)
+    this.extra.delete(key)
+    return true
   }
 
   // subscribes to filter on every home node we follow devices at, now and later

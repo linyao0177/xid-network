@@ -70,15 +70,19 @@ let cTool = null // runs components/hdht_mqtt/test/test_signed, when it builds
   const again = inbox.check(topic, sign(kp.secretKey, topic, 2, 'b'))
   check('SignedInbox refuses a sequence number seen before', a.ok && b.ok && !again.ok && again.reason === 'replayed')
 
-  const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', 'components', 'hdht_mqtt')
+  const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', 'third_party', 'hyperdht-esp32', 'components', 'hdht_mqtt')
+  const sources = fs.existsSync(path.join(dir, 'signed.c')) && fs.existsSync(path.join(dir, 'test', 'test_signed.c'))
   const sodium = ['/opt/homebrew', '/usr/local', '/usr'].find((p) => fs.existsSync(path.join(p, 'include', 'sodium.h')))
   const bin = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hdht-mqtt-')), 'test_signed')
   let built = false
-  if (sodium) {
+  let why = !sources ? 'no sources at ' + dir : !sodium ? 'no libsodium headers' : ''
+  if (sources && sodium) {
     try {
       execFileSync('clang', ['-O1', '-Wall', '-I' + path.join(dir, 'include'), '-I' + path.join(sodium, 'include'), path.join(dir, 'signed.c'), path.join(dir, 'test', 'test_signed.c'), '-L' + path.join(sodium, 'lib'), '-lsodium', '-o', bin])
       built = true
-    } catch {}
+    } catch (err) {
+      why = 'clang: ' + String(err.stderr || err.message).trim().split('\n')[0]
+    }
   }
   if (built) {
     const c = (...args) => execFileSync(bin, args).toString().trim()
@@ -88,7 +92,8 @@ let cTool = null // runs components/hdht_mqtt/test/test_signed, when it builds
     check('C signs, JS opens (seq up to 2^64-1)', o && o.seq === 18446744073709551615n && String(o.payload) === 'from C')
     check('JS signs, C opens; C refuses a changed one', c('open', key, topic, msg.toString('hex')) === '42 {"kwh":1.5}' && c('open', key, topic, tampered.toString('hex')) === 'BAD')
   } else {
-    console.log('SKIP the C side of signed messages: no clang or libsodium')
+    // loud: without it nothing checks that the device's C and this JS agree
+    console.log(`SKIP the C side of signed messages and receipts (NOT cross-checked): ${why}`)
   }
 }
 

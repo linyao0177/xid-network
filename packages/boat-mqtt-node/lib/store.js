@@ -17,6 +17,9 @@
 //   for single blocks with their Merkle proofs (packages/boat-ota's wire, which
 //   devices check in C too). A spot check asks for random blocks: a store that
 //   no longer holds them cannot answer. It needs none of the data beforehand.
+//   What a store says about itself (its core, its signer, how long the log is)
+//   is the store's word only: a checker passes what it knows already (the
+//   least length, sequence numbers that must be there, the core it saw before).
 // - Receipts (receipts.js): what it stored, signed, retained over MQTT at
 //   d/<store>/receipts/<device>.
 
@@ -35,6 +38,10 @@ import { senderOf, hex } from './topics.js'
 
 const require = createRequire(import.meta.url)
 const { signedHead, blockProof, wire, verifyHead, verifyBlock } = require('boat-ota')
+
+const REQUEST_MS = 15000 // how long a reader waits for a store to connect, and to answer
+const RECORD_MS = 60 * 60 * 1000 // DHT nodes drop a record after about 48 hours: put again long before
+const MAX_TOPICS = 4096 // topics per device whose newest seq is kept; older ones fall under the floor
 
 export function encodeEntry (topic, message) {
   const t = Buffer.from(topic)
@@ -114,7 +121,12 @@ export async function createStore (opts) {
 
 export class Store extends EventEmitter {
   // authorize: see serveQueries; record: more fields for the store's record (its read terms)
-  constructor ({ dht, bootstrap, keyPair, storage, devices = [], receiptMs = 5000, refreshMs = 60000, authorize = null, record = {} }) {
+  // replicate: who may copy the cores with Hypercore's replication (mirrors):
+  //   true (everyone), false, a list of keys, or (remote key hex) -> boolean.
+  //   Replication hands over every block for nothing, so a store that sells
+  //   reads (authorize) lets nobody replicate unless told to; others let everyone.
+  // recordMs: how often the store's DHT record is put again (0: once)
+  constructor ({ dht, bootstrap, keyPair, storage, devices = [], receiptMs = 5000, refreshMs = 60000, authorize = null, record = {}, replicate, recordMs = RECORD_MS }) {
     super()
     this.dht = dht || new HyperDHT({ bootstrap })
     this._ownDht = !dht
@@ -131,6 +143,19 @@ export class Store extends EventEmitter {
     this.refreshMs = refreshMs
     this.authorize = authorize
     this.extraRecord = record
+    this.replicate = replicate === undefined ? !authorize : replicate
+    this.recordMs = recordMs
+  }
+
+  _mayReplicate (remote) {
+    const r = this.replicate
+    if (typeof r === 'function') return !!remote && !!r(remote)
+    if (Array.isArray(r)) return !!remote && r.some((k) => hex(k) === remote)
+    return !!r
+  }
+
+  _putRecord () {
+    return this.dht.mutablePut(this.keyPair, Buffer.from(JSON.stringify(this.record)), { seq: Math.floor(Date.now() / 1000) })
   }
 
   async ready () {
@@ -142,13 +167,18 @@ export class Store extends EventEmitter {
     this._conns = new Set()
     this.replicator = this.dht.createServer((conn) => {
       conn.on('error', () => {})
+      if (!this._mayReplicate(conn.remotePublicKey ? hex(conn.remotePublicKey) : null)) return conn.destroy()
       this._conns.add(conn)
       conn.on('close', () => this._conns.delete(conn))
       this.corestore.replicate(conn)
     })
     await this.replicator.listen(this.replicateKeyPair)
-    const record = { ...this.extraRecord, v: '1', boat_store: '1', catalog: hex(this.catalog.core.key), replicate: hex(this.replicateKeyPair.publicKey) }
-    await this.dht.mutablePut(this.keyPair, Buffer.from(JSON.stringify(record)), { seq: Math.floor(Date.now() / 1000) })
+    this.record = { ...this.extraRecord, v: '1', boat_store: '1', catalog: hex(this.catalog.core.key), replicate: hex(this.replicateKeyPair.publicKey) }
+    await this._putRecord()
+    if (this.recordMs) {
+      this._recordTimer = setInterval(() => this._putRecord().catch(() => {}), this.recordMs)
+      this._recordTimer.unref()
+    }
     this._timer = setInterval(() => this._sendReceipts(), this.receiptMs)
     this._timer.unref()
     if (this.refreshMs) {
@@ -188,7 +218,9 @@ export class Store extends EventEmitter {
     if (d) return d
     const core = this.corestore.get({ name: 'device/' + key })
     await core.ready()
-    d = { core, last: new Map(), bySeq: new Map() }
+    // floor: the newest seq of the topics dropped from `last` (MAX_TOPICS);
+    // queue: appends run one at a time
+    d = { core, last: new Map(), bySeq: new Map(), floor: -1n, queue: Promise.resolve() }
     // after a restart: the newest seq per topic, and where recent messages
     // are, from the core itself
     for (let i = core.length - 1; i >= 0 && i >= core.length - 1000; i--) {
@@ -236,13 +268,30 @@ export class Store extends EventEmitter {
       return
     }
     const d = await this._device(from)
+    // one at a time for a device: `last` moves only once the entry is in the
+    // core (an append that fails can be sent again), and of two copies that
+    // arrive together only one may pass the check
+    const run = d.queue.then(() => this._append(d, from, topic, payload, m))
+    d.queue = run.catch(() => {})
+    return run
+  }
+
+  async _append (d, from, topic, payload, m) {
     const last = d.last.get(topic)
-    if (last !== undefined && m.seq <= last) {
+    if (last !== undefined ? m.seq <= last : m.seq <= d.floor) {
       this.stats.replayed++
       return
     }
-    d.last.set(topic, m.seq)
     const index = (await d.core.append(encodeEntry(topic, payload))).length - 1
+    d.last.delete(topic) // (in time order: the newest last)
+    d.last.set(topic, m.seq)
+    if (d.last.size > MAX_TOPICS) {
+      // a device with ever new topics: forget the oldest, and refuse on
+      // topics not remembered what is not newer than it
+      const [old, seq] = d.last.entries().next().value
+      d.last.delete(old)
+      if (seq > d.floor) d.floor = seq
+    }
     // where a message is, by sequence number (one counter per device), for the last 10,000
     d.bySeq.set(String(m.seq), index)
     if (d.bySeq.size > 10000) d.bySeq.delete(d.bySeq.keys().next().value)
@@ -264,6 +313,7 @@ export class Store extends EventEmitter {
   async close () {
     clearInterval(this._timer)
     clearInterval(this._refreshTimer)
+    clearInterval(this._recordTimer)
     for (const p of this.clients.values()) (await p.catch(() => null))?.end(true)
     for (const c of this._conns) c.destroy() // replication sessions hold the cores open
     await this.queries.close()
@@ -285,7 +335,9 @@ export async function createMirror ({ dht, keyPair, storage, store }) {
   await m.corestore.ready()
   // updates wait until the replication connection is up
   const found = m.corestore.findingPeers()
-  const conn = dht.connect(Buffer.from(record.replicate, 'hex'))
+  // with its own key when it has one: a store that sells reads lets only the
+  // mirrors it names replicate (Store's replicate)
+  const conn = dht.connect(Buffer.from(record.replicate, 'hex'), keyPair ? { keyPair } : undefined)
   conn.on('error', () => {})
   conn.once('close', found)
   m.corestore.replicate(conn)
@@ -328,48 +380,79 @@ export async function createMirror ({ dht, keyPair, storage, store }) {
 
 // ---- reading and checking a store (or a mirror) ----------------------------
 
-async function ask (dht, server, keyPair = null) {
+// timeout: ms to wait for the connection, and for each answer (0: for ever)
+async function ask (dht, server, keyPair = null, timeout = REQUEST_MS) {
   const conn = dht.connect(Buffer.from(hex(server), 'hex'), keyPair ? { keyPair } : undefined)
-  const waiting = []
-  conn.on('data', (data) => { const w = waiting.shift(); if (w) w(data) })
-  conn.on('error', () => {})
-  await new Promise((resolve, reject) => {
-    conn.once('open', resolve)
-    conn.once('error', reject)
+  const waiting = [] // { resolve, reject, timer }, oldest first
+  let closed = null
+  const fail = (err) => {
+    closed = closed || err
+    for (const w of waiting.splice(0)) {
+      clearTimeout(w.timer)
+      w.reject(closed)
+    }
+  }
+  conn.on('data', (data) => {
+    const w = waiting.shift()
+    if (!w) return
+    clearTimeout(w.timer)
+    w.resolve(data)
   })
-  const req = (body) => new Promise((resolve) => {
-    waiting.push(resolve)
+  conn.on('error', () => {})
+  conn.on('close', () => fail(new Error('connection closed')))
+  await new Promise((resolve, reject) => {
+    const t = timeout ? setTimeout(() => { reject(new Error('timed out connecting')); conn.destroy() }, timeout) : null
+    conn.once('open', () => { clearTimeout(t); resolve() })
+    conn.once('error', (err) => { clearTimeout(t); reject(err) })
+    conn.once('close', () => { clearTimeout(t); reject(new Error('connection closed')) })
+  })
+  const req = (body) => new Promise((resolve, reject) => {
+    if (closed) return reject(closed)
+    const w = { resolve, reject, timer: null }
+    // answers come back in order, with nothing to tell them apart: a late one
+    // would be taken for the next request's, so a timeout ends the connection
+    if (timeout) w.timer = setTimeout(() => { fail(new Error('timed out waiting for an answer')); conn.destroy() }, timeout)
+    waiting.push(w)
     conn.write(Buffer.from(JSON.stringify(body)))
   })
   return { conn, req }
 }
 
+const KEY = /^[0-9a-f]{64}$/
 const failure = (data) => data[0] === 0x45 ? data.subarray(1).toString() : null
 
 // opens a device's log on a store or mirror: { length, head, block(i) }, every
 // block checked against the signed head and the device's signature
 //
 // pay(request) -> fields to add to a block request (a paid read's voucher)
-export async function openLog (dht, server, device, { pay = null, keyPair = null } = {}) {
+// timeout: ms to wait for the store to connect and for each answer (0: for
+//   ever); a request that times out rejects, and closes the log
+// The core, its signer and the length are what the store says. What the
+// caller knows already holds it to that:
+//   core, signer: the keys seen before (as returned here), or it throws
+//   minLength: entries the caller knows are there, or it throws
+export async function openLog (dht, server, device, { pay = null, keyPair = null, timeout = REQUEST_MS, core = null, signer = null, minLength = 0 } = {}) {
   const key = hex(device)
-  const { conn, req } = await ask(dht, server, keyPair)
+  const { conn, req } = await ask(dht, server, keyPair, timeout)
+  const stop = (message) => {
+    conn.destroy()
+    return new Error(message)
+  }
   const idx = await req({ op: 'index', device: key })
-  if (failure(idx)) {
-    conn.destroy()
-    throw new Error('store: ' + failure(idx))
-  }
-  const index = JSON.parse(idx.toString())
+  if (failure(idx)) throw stop('store: ' + failure(idx))
+  let index
+  try {
+    index = JSON.parse(idx.toString())
+  } catch {}
+  if (!index || !KEY.test(index.core) || !KEY.test(index.signer)) throw stop('store: bad index')
+  if (core && hex(core) !== index.core) throw stop('head: another core than the one expected')
+  if (signer && hex(signer) !== index.signer) throw stop('head: another signer than the one expected')
   const h = await req({ op: 'head', device: key })
-  if (failure(h)) {
-    conn.destroy()
-    throw new Error('store: ' + failure(h))
-  }
+  if (failure(h)) throw stop('store: ' + failure(h))
   const head = wire.decodeHead(h)
   const why = verifyHead(head, Buffer.from(index.core, 'hex'), Buffer.from(index.signer, 'hex'))
-  if (why) {
-    conn.destroy()
-    throw new Error('head: ' + why)
-  }
+  if (why) throw stop('head: ' + why)
+  if (head.length < minLength) throw stop(`head: ${head.length} entries, fewer than the ${minLength} expected`)
   const block = async (i) => {
     const body = { op: 'block', device: key, index: i, length: head.length }
     if (pay) Object.assign(body, await pay(body))
@@ -379,8 +462,9 @@ export async function openLog (dht, server, device, { pay = null, keyPair = null
     if (b.index !== i) return { index: i, ok: false, reason: 'another block' }
     const bad = verifyBlock(head, b)
     if (bad) return { index: i, ok: false, reason: bad }
-    const e = decodeEntry(Buffer.from(b.data))
-    const m = senderOf(e.topic) === key ? open(Buffer.from(key, 'hex'), e.topic, e.message) : null
+    let e = null
+    try { e = decodeEntry(Buffer.from(b.data)) } catch {} // too short to be an entry
+    const m = e && senderOf(e.topic) === key ? open(Buffer.from(key, 'hex'), e.topic, e.message) : null
     if (!m) return { index: i, ok: false, reason: 'not signed by the device' }
     return { index: i, ok: true, topic: e.topic, seq: m.seq, payload: m.payload, message: e.message }
   }
@@ -394,19 +478,37 @@ export async function openLog (dht, server, device, { pay = null, keyPair = null
     const b = await block(at)
     return b.ok && (!topic || b.topic === topic) && String(b.seq) === String(seq) ? b : null
   }
-  return { length: head.length, head, core: index.core, block, find, close: () => conn.destroy() }
+  return { length: head.length, head, core: index.core, signer: index.signer, block, find, close: () => conn.destroy() }
 }
 
 // asks for `samples` random blocks: a store that does not hold them cannot answer
-export async function spotCheck (dht, server, device, { samples = 8, indices } = {}) {
+//
+// Every block must carry the device's own signature (openLog), so a store
+// cannot pass with a log of its own making; but how long the log is, is its
+// word. So the caller says what it knows:
+//   minLength: entries known to be there (1: an empty log does not pass)
+//   seqs: sequence numbers known to be stored (from a store's signed work,
+//     say); each must be found, as a checked block (`found`, in that order)
+//   core, signer, keyPair, pay, timeout: as for openLog
+export async function spotCheck (dht, server, device, { samples = 8, indices, minLength = 1, seqs = [], core = null, signer = null, keyPair = null, pay = null, timeout = REQUEST_MS } = {}) {
   const t0 = Date.now()
-  const log = await openLog(dht, server, device)
+  const log = await openLog(dht, server, device, { core, signer, keyPair, pay, timeout })
   try {
+    if (log.length < minLength) {
+      const reason = `${log.length} entries, fewer than the ${minLength} expected`
+      return { ok: false, length: log.length, checked: 0, failed: [{ ok: false, reason }], found: [], ms: Date.now() - t0 }
+    }
     const picks = indices || Array.from({ length: Math.min(samples, log.length) }, () => crypto.randomInt(log.length))
     const results = []
     for (const i of picks) results.push(await log.block(i))
+    const found = []
+    for (const seq of seqs) {
+      const b = await log.find(null, seq)
+      found.push(b)
+      if (!b) results.push({ seq: BigInt(seq), ok: false, reason: 'not held' })
+    }
     const failed = results.filter((r) => !r.ok)
-    return { ok: failed.length === 0, length: log.length, checked: results.length, failed, ms: Date.now() - t0 }
+    return { ok: failed.length === 0, length: log.length, checked: picks.length + seqs.length, failed, found, ms: Date.now() - t0 }
   } finally {
     log.close()
   }

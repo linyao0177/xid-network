@@ -20,6 +20,12 @@
 //   signer is the wallet in the device's DID record (boat-peer), that it pays
 //   the payee no more than is due, that it is valid long enough to settle, and
 //   that its nonce is new. Paying is free and always allowed.
+//   Nonces are remembered in memory, until the authorization runs out: after
+//   a restart a payment sent again within its validity is taken again here
+//   (and what was owed is forgotten too). The token contract takes a nonce
+//   once, so it does not settle twice; to refuse it here as well, the nonces
+//   and the accounts would have to be kept on disk, and a node has no state
+//   directory yet.
 // - Credit. While more than `credit` is due, the node refuses the key's other
 //   publishes (and so closes its connection).
 // - Settlement is not done here: each good payment is a 'payment' event with
@@ -34,6 +40,7 @@ const require = createRequire(import.meta.url)
 const { eth, verifyRecord } = require('boat-peer')
 
 const MIN_VALIDITY_S = 120 // an authorization must stay valid this long to be settled
+const RECORD_MS = 60 * 60 * 1000 // DHT nodes drop a record after about 48 hours: put again long before
 
 export class Billing extends EventEmitter {
   constructor (node, opts) {
@@ -47,10 +54,16 @@ export class Billing extends EventEmitter {
     this.chainId = Number(opts.chainId)
     this.domain = { name: opts.domain.name, version: opts.domain.version, chainId: this.chainId, verifyingContract: opts.token }
     this.invoiceMs = opts.invoiceMs || 10000
-    this.accounts = new Map() // key hex -> { messages, bytes, paid, invoice, lastInvoice }
-    this._nonces = new Set()
+    this.recordMs = opts.recordMs === undefined ? RECORD_MS : opts.recordMs // 0: the terms are put once
+    // keys are free to make: beyond this many accounts, the one idle longest
+    // is dropped (and what it owed, less than the credit, with it)
+    this.maxAccounts = opts.maxAccounts || 100000
+    this.accounts = new Map() // key hex -> { messages, bytes, paid, invoice, lastInvoice }, the busiest last
+    this._nonces = new Map() // from + nonce -> validBefore (s): kept while the authorization could be sent again
+    this._pruned = Date.now()
     this._wallets = new Map() // key hex -> Promise<address | null>
     this._timer = null
+    this._recordTimer = null
   }
 
   terms () {
@@ -68,15 +81,24 @@ export class Billing extends EventEmitter {
     }
   }
 
+  _putTerms () {
+    return this.node.dht.mutablePut(this.node.keyPair, Buffer.from(JSON.stringify(this.terms())), { seq: Math.floor(Date.now() / 1000) })
+  }
+
   async start () {
-    const put = await this.node.dht.mutablePut(this.node.keyPair, Buffer.from(JSON.stringify(this.terms())), { seq: Math.floor(Date.now() / 1000) })
+    const put = await this._putTerms()
     this._timer = setInterval(() => this._invoiceAll(), this.invoiceMs)
     this._timer.unref()
+    if (this.recordMs) {
+      this._recordTimer = setInterval(() => this._putTerms().catch(() => {}), this.recordMs)
+      this._recordTimer.unref()
+    }
     return put
   }
 
   stop () {
     clearInterval(this._timer)
+    clearInterval(this._recordTimer)
   }
 
   _account (key) {
@@ -84,6 +106,11 @@ export class Billing extends EventEmitter {
     if (!a) {
       a = { messages: 0n, bytes: 0n, paid: 0n, invoice: 0, lastInvoice: 0 }
       this.accounts.set(key, a)
+      if (this.accounts.size > this.maxAccounts) {
+        const idle = this.accounts.keys().next().value
+        this.accounts.delete(idle)
+        this._wallets.delete(idle)
+      }
     }
     return a
   }
@@ -108,6 +135,8 @@ export class Billing extends EventEmitter {
     if (this.owed(a) - a.paid > this.credit) return { ok: false, reason: 'payment required' }
     a.messages++
     a.bytes += BigInt(bytes)
+    this.accounts.delete(key) // (in time order: the busiest last)
+    this.accounts.set(key, a)
     const due = this.owed(a) - a.paid
     if (due * 2n >= this.credit && Date.now() - a.lastInvoice > 2000) this.invoice(key)
     return { ok: true }
@@ -127,7 +156,14 @@ export class Billing extends EventEmitter {
   }
 
   _invoiceAll () {
+    if (Date.now() - this._pruned > 60000) this._pruneNonces()
     for (const [key, a] of this.accounts) if (this.owed(a) > a.paid && Date.now() - a.lastInvoice >= this.invoiceMs - 50) this.invoice(key)
+  }
+
+  // nonces of authorizations that ran out: they are refused for that now
+  _pruneNonces (now = Date.now()) {
+    this._pruned = now
+    for (const [n, validBefore] of this._nonces) if (validBefore * 1000 < now) this._nonces.delete(n)
   }
 
   // the wallet a device's DID record names, checked (boat-peer verifyRecord)
@@ -165,19 +201,26 @@ export class Billing extends EventEmitter {
     if (String(p.to).toLowerCase() !== this.payee) return refuse('not our payee')
     if (value <= 0n || value > this.owed(a) - a.paid) return refuse(`value ${value} is not between 1 and the ${this.owed(a) - a.paid} due`)
     if (Number(p.validAfter) > now || Number(p.validBefore) < now + MIN_VALIDITY_S) return refuse('not valid now, or not long enough')
-    if (!/^0x[0-9a-fA-F]{64}$/.test(p.nonce) || this._nonces.has(String(p.from).toLowerCase() + p.nonce.toLowerCase())) return refuse('nonce reused')
+    const nonce = String(p.from).toLowerCase() + String(p.nonce).toLowerCase()
+    if (!/^0x[0-9a-fA-F]{64}$/.test(p.nonce) || this._nonces.has(nonce)) return refuse('nonce reused')
+    // taken now, before anything is awaited: of the same authorization sent
+    // twice at once only one may pass. Given back if this one is refused.
+    this._nonces.set(nonce, Number(p.validBefore))
+    const release = (reason) => {
+      this._nonces.delete(nonce)
+      return refuse(reason)
+    }
     const authorization = { from: p.from, to: p.to, value: String(value), validAfter: Number(p.validAfter), validBefore: Number(p.validBefore), nonce: p.nonce, signature: p.signature }
     let signer
     try {
       signer = eth.verifyTransfer(this.domain, authorization, p.signature).toLowerCase()
     } catch {
-      return refuse('bad signature')
+      return release('bad signature')
     }
-    const wallet = await this._wallet(key)
-    if (!wallet) return refuse('no valid DID record with a wallet')
-    if (signer !== wallet || String(p.from).toLowerCase() !== wallet) return refuse('not signed by the wallet in its DID record')
-    if (value > this.owed(a) - a.paid) return refuse('paid meanwhile')
-    this._nonces.add(String(p.from).toLowerCase() + p.nonce.toLowerCase())
+    const wallet = await this._wallet(key).catch(() => null)
+    if (!wallet) return release('no valid DID record with a wallet')
+    if (signer !== wallet || String(p.from).toLowerCase() !== wallet) return release('not signed by the wallet in its DID record')
+    if (value > this.owed(a) - a.paid) return release('paid meanwhile')
     a.paid += value
     const result = { key, authorization, invoice: p.invoice, owed: String(this.owed(a)), paid: String(a.paid) }
     this.emit('payment', result)
