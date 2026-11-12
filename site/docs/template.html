@@ -193,6 +193,16 @@ h2:hover .anchor, h3:hover .anchor { opacity: 1; }
 .xstack .cell small { display: block; font-size: 12.5px; color: var(--mute); line-height: 1.4; }
 .xstack .peer { align-self: center; height: 0; border-top: 1.5px dashed var(--line); }
 .xstack .peer.real { border-top: 2.25px solid var(--fig-flow); }
+.xboat { display: grid; grid-template-columns: minmax(0, 1fr) 112px; gap: 8px; padding: 20px 16px; max-width: 560px; margin: 0 auto; }
+.xboat .cell { border: 1.5px solid var(--fig-node); background: var(--side); border-radius: 8px; padding: 9px 12px; min-width: 0; }
+.xboat .cell.wide { grid-column: 1 / -1; }
+.xboat .cell b { display: block; font-size: 14.5px; font-weight: 700; }
+.xboat .cell small { display: block; font-size: 12.5px; color: var(--mute); line-height: 1.45; }
+.xboat .cell.econ { border-color: var(--fig-flow); }
+.xboat .cell.off { border: 1.5px dashed var(--fig-flow); background: var(--bg); text-align: center; align-content: center; }
+.xboat .cell.trust { border-color: var(--accent); background: var(--accent-soft); }
+.xboat .cell.trust b { color: var(--accent); }
+.xboat .cell.wire { border-color: var(--line); background: var(--bg); }
 
 @media (max-width: 960px) {
   .menu { display: inline-block; }

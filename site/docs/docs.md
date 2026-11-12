@@ -17,7 +17,7 @@ Four kinds of people use xid network. Find yours and go to its chapter. Anyone c
 
 ![Devices sign, staked nodes check each other, the chain pays for agreed work](img:glance)
 
-A device talks to one node at a time, over the internet, from behind any router. That node passes its data to the other nodes working on it, and they check each other. The contract on chain only keeps score: who has staked, which work was agreed, who gets paid and who lied.
+The software on the device is called [BoAT](#boat). A device talks to one node at a time, over the internet, from behind any router. That node passes its data to the other nodes working on it, and they check each other. The contract on chain only keeps score: who has staked, which work was agreed, who gets paid and who lied.
 
 ## Download {#download}
 
@@ -341,6 +341,47 @@ To build the meter firmware, `examples/mqtt_p2p`, you need ESP-IDF 5.x and the [
 3. The board reads the node list from your verifiers, connects to one of your nodes and prints its device key. Post jobs for that key as in step 6.
 
 The board signs each reading in about 21 ms and takes 5 to 8 seconds to find a node and connect.
+
+## BoAT {#boat}
+
+BoAT is the software on the device. It is a runtime for a microcontroller that first makes the device trustworthy, then lets it take part in an economy: the device holds its own key, signs what it sends, pays and gets paid, and earns rewards for work it does for a DePIN network. The device needs no gateway and no Linux. It only signs; settlement happens on chain.
+
+xid network is the other half: the staked nodes a BoAT device works with. Everything named `boat_…` in firmware is BoAT. The node software (`boat-node`, the registry contract) carries the same name but runs on servers.
+
+![BoAT on an ESP32-C3: an economy layer on a trust layer on connectivity, with settlement on chain](fig:boat)
+
+### Trust layer
+
+A machine has to be trusted before it can be paid. This layer proves which machine is speaking and that what it says was not changed.
+
+| Capability | Component | What it does |
+| --- | --- | --- |
+| Machine identity | [boat_device](https://github.com/linyao0177/xid-network/tree/main/components/boat_device) | The device makes and keeps its own Ed25519 key. That one key is its ID (`did:mw:<key>`), its address on the network and its MQTT client ID. No account system. |
+| Verifiable data | [boat_device](https://github.com/linyao0177/xid-network/tree/main/components/boat_device) | Every reading is signed on the device, in about 21 ms. Each node that handles it signs a receipt, and the device checks those receipts itself. The C and JavaScript implementations are tested against each other. |
+| Factory trust | [hdht_cred](https://github.com/linyao0177/hyperdht-esp32/tree/main/components/hdht_cred) | A device checks another device's manufacturer credential on the chip, revocations included, with no server online. |
+| Zero-knowledge checks | [zk](https://github.com/linyao0177/hyperdht-esp32/tree/main/components/zk) | Groth16 proofs verified on the ESP32-C3 without hardware help, on the curve that circom, snarkjs and the EVM use. |
+
+### Economy layer
+
+| Capability | Component | What it does |
+| --- | --- | --- |
+| Machine payments | [boat_mer](https://github.com/linyao0177/hyperdht-esp32/tree/main/examples/boat_mer) | The device signs its own payment authorizations and pays per use, x402 included. The seller settles them on chain. In two 5-minute runs on a board against a local fork, 29 of 29 and 26 of 26 invoices settled. |
+| DePIN access | [boat_depin](https://github.com/linyao0177/xid-network/tree/main/components/boat_depin) | One board becomes a station: it proves its location, reports readings, trades radio beacons with its neighbours as witnesses, and claims rewards each epoch. The example station is 250 lines of app code. Rewards settle on xid network's contracts when a quorum of nodes signs the same result. See [For DePIN networks](#depin). |
+
+### Connectivity
+
+All of it runs on [HyperDHT](https://github.com/linyao0177/hyperdht-esp32), ported to the chip and compatible on the wire with the JavaScript implementation.
+
+- **Direct links.** Two devices behind routers find each other by public key and open a direct, end-to-end encrypted link. When that fails they use a relay.
+- **MQTT over those links.** The stock ESP-IDF MQTT client runs unchanged. When a node goes away, the device is on another one in 14 to 16 seconds.
+- **Firmware updates.** Firmware comes in blocks, and the device checks each block against the publisher's signed tree, so any node that holds it can serve it.
+- **BLE.** The same encrypted stream runs over BLE, for setup next to the device with no network.
+
+[Device to node, layer by layer](#architecture) shows the protocols row by row.
+
+### What BoAT leaves to others
+
+BoAT is the machine's end. It does not hold wallets for several chains, swap tokens, move money in or out of fiat, or issue a token. Wallet software does those.
 
 ## For device makers
 
