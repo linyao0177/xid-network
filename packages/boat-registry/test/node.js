@@ -197,7 +197,10 @@ try {
   const tok = new Contract(await token.getAddress(), TEST_TOKEN.abi, chain.provider)
   const b0 = await tok.balanceOf(ops[0].address)
   await until(async () => N1.withdrawn > 0n, (EPOCH * 2 + 10) * 1000)
-  check('rewards are withdrawn after they mature', N1.withdrawn > 0n && (await tok.balanceOf(ops[0].address)) > b0, `N1 withdrew ${N1.withdrawn}`)
+  // (on a slow machine the first withdrawal is done before the balance above
+  // is read: the registry's event is the proof then)
+  const paidOut = await reg.queryFilter(reg.filters.RewardsWithdrawn(ops[0].address))
+  check('rewards are withdrawn after they mature', N1.withdrawn > 0n && ((await tok.balanceOf(ops[0].address)) > b0 || paidOut.some((e) => e.args.amount > 0n)), `N1 withdrew ${N1.withdrawn}`)
 
   // the node list
   const trusted = [N1, N2, N3].map((n) => n.card.verify)
