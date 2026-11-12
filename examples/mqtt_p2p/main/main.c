@@ -210,6 +210,8 @@ on_mqtt (void *arg, esp_event_base_t base, int32_t id, void *data) {
     }
 #endif
 
+    // never an ack for an ack: two devices would go on for ever
+    if (rest_len >= 4 && strcmp(topic + n - 4, "/ack") == 0) break;
     char reply_topic[200], reply[160];
     snprintf(reply_topic, sizeof(reply_topic), "d/%s/to/%s/ack", me, sender);
     int len = snprintf(reply, sizeof(reply), "ack:%.*s", e->data_len > 100 ? 100 : e->data_len, e->data);

@@ -23,6 +23,10 @@ static const char *TAG = "boat_depin";
 #define HEARD_MAX 16     // beacons kept for the slot (and the next)
 #define REPORT_MAX 5     // beacons in one witness report (it stays under 1.5 kB)
 #define REJOIN_MS (30 * 60 * 1000)
+#define PING_MAX 256     // bytes of a ping: { net, nonce } is under 170
+#define PING_DEPTH 2     // and it is flat
+#define QUEUE_LEN 16
+#define QUEUE_KEEP 4     // places in the queue beacons never take: pings and connects
 
 static const char BEACON[] = "xid-depin-beacon/1"; // and its 0 byte
 
@@ -122,6 +126,7 @@ static void
 on_espnow (const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   // the Wi-Fi task: only a quick look, the signature is checked on ours
   if (len != FRAME_LEN || memcmp(data, MAGIC, 4) != 0 || memcmp(data + 4, net, 32) != 0) return;
+  if (uxQueueSpacesAvailable(queue) <= QUEUE_KEEP) return; // a flood of frames must not push the pings out
   ev_t ev = { .kind = EV_BEACON, .rssi = info->rx_ctrl ? (int8_t) info->rx_ctrl->rssi : 0 };
   memcpy(ev.frame, data, FRAME_LEN);
   xQueueSend(queue, &ev, 0);
@@ -161,6 +166,14 @@ take_beacon (const ev_t *ev, int64_t slot) {
   if (memcmp(from, me, 32) == 0) return;
   if (s != slot && s != slot + 1) return; // stale, or from too far ahead
   for (size_t i = 0; i < heard_len; i++) if (heard[i].slot == s && memcmp(heard[i].from, from, 32) == 0) return; // a repeat
+  // Where it goes. A full table keeps the strongest (those are reported), so
+  // whoever comes first with many keys cannot keep the others out; a weaker
+  // one is dropped before its signature costs anything, repeats included.
+  heard_t *h = &heard[heard_len < HEARD_MAX ? heard_len : 0];
+  if (heard_len == HEARD_MAX) {
+    for (size_t i = 1; i < HEARD_MAX; i++) if (heard[i].rssi < h->rssi) h = &heard[i];
+    if (ev->rssi <= h->rssi) return;
+  }
   uint8_t msg[sizeof(BEACON) + 72];
   beacon_bytes(from, s, msg);
   if (crypto_sign_verify_detached(ev->frame + 76, msg, sizeof(msg), from) != 0) {
@@ -168,8 +181,7 @@ take_beacon (const ev_t *ev, int64_t slot) {
     return;
   }
   stats.beacons_heard++;
-  if (heard_len == HEARD_MAX) return;
-  heard_t *h = &heard[heard_len++];
+  if (heard_len < HEARD_MAX) heard_len++;
   memcpy(h->from, from, 32);
   h->slot = s;
   memcpy(h->sig, ev->frame + 76, 64);
@@ -251,10 +263,30 @@ depin_task (void *arg) {
   }
 }
 
+// Anyone may ping, and cJSON calls itself once for each level of nesting, on
+// esp-mqtt's small stack: only what is as small and as flat as a ping is parsed.
+static bool
+ping_shape_ok (const uint8_t *data, size_t len) {
+  if (len > PING_MAX) return false;
+  int depth = 0;
+  bool in_string = false;
+  for (size_t i = 0; i < len; i++) {
+    uint8_t c = data[i];
+    if (in_string) {
+      if (c == '\\') i++;
+      else if (c == '"') in_string = false;
+    } else if (c == '"') in_string = true;
+    else if ((c == '{' || c == '[') && ++depth > PING_DEPTH) return false;
+    else if ((c == '}' || c == ']') && depth > 0) depth--;
+  }
+  return true;
+}
+
 bool
 boat_depin_message (const char *from_hex, const char *what, const uint8_t *data, size_t len) {
   (void) from_hex; // the node checked the sender; anyone may ping
   if (!started || strcmp(what, "depin-ping") != 0) return false;
+  if (!ping_shape_ok(data, len)) return true;
   cJSON *m = cJSON_ParseWithLength((const char *) data, len);
   const cJSON *n = cJSON_GetObjectItem(m, "net");
   const cJSON *nonce = cJSON_GetObjectItem(m, "nonce");
@@ -307,7 +339,7 @@ boat_depin_start (const boat_depin_config_t *c) {
   snprintf(join_name, sizeof(join_name), "depin/%s/join", net_hex);
   snprintf(pong_name, sizeof(pong_name), "depin/%s/pong", net_hex);
   snprintf(witness_name, sizeof(witness_name), "depin/%s/witness", net_hex);
-  queue = xQueueCreate(16, sizeof(ev_t));
+  queue = xQueueCreate(QUEUE_LEN, sizeof(ev_t));
   if (!queue) return ESP_ERR_NO_MEM;
   if (c->beacons) {
     esp_err_t err = esp_now_init();
