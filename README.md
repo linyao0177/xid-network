@@ -37,11 +37,13 @@ Three simulated meters sign readings, the testnet sponsors verify and store jobs
 
 ```bash
 git clone --recursive https://github.com/linyao0177/xid-network.git
-cd xid-network/packages/boat-registry && npm install && npm test     # Node.js 20+; anvil (Foundry) for the chain tests
-cd ../../examples/boat_device_min && idf.py build                    # ESP-IDF 5.5
+cd xid-network
+npm run setup && npm test                            # Node.js 20+; anvil (Foundry) for the chain tests
+npm run test:sol                                     # the contracts' own tests (forge)
+cd examples/boat_device_min && idf.py build          # ESP-IDF 5.5
 ```
 
-Wi-Fi for developer builds comes from a gitignored `sdkconfig.wifi` at the repository root (copy `third_party/hyperdht-esp32/sdkconfig.wifi.example`); release builds carry none and take it over Improv. `tools/release/release.sh https://iot.xid.network/dl/node` builds what the site serves.
+`npm run setup` installs the three node packages and the two they use from the submodule, in order (`npm install` in one package alone does not install what the packages it links to need). Wi-Fi for developer builds comes from a gitignored `sdkconfig.wifi` at the repository root (copy `third_party/hyperdht-esp32/sdkconfig.wifi.example`); release builds carry none and take it over Improv. `tools/release/release.sh https://iot.xid.network/dl/node` builds what the site serves.
 
 ## Contributing and security
 

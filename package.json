@@ -1,0 +1,17 @@
+{
+  "name": "xid-network",
+  "private": true,
+  "description": "Scripts for the whole repository: each package under packages/ has its own package.json and tests",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "node tools/setup.mjs",
+    "test": "npm run test:mqtt && npm run test:registry && npm run test:depin",
+    "test:mqtt": "npm test --prefix packages/boat-mqtt-node",
+    "test:registry": "npm test --prefix packages/boat-registry",
+    "test:depin": "npm test --prefix packages/xid-depin",
+    "test:sol": "npm run test:sol --prefix packages/boat-registry && npm run test:sol --prefix packages/xid-depin"
+  }
+}
