@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "deploy": "node build.mjs && wrangler deploy"
+    "deploy": "node build.mjs --release && wrangler deploy"
   },
   "devDependencies": {
     "marked": "12.0.2",
