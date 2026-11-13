@@ -522,6 +522,18 @@ Set `metricsPort` in the node's `node.json` and Prometheus can scrape `/metrics`
 
 Use device data from anywhere, check it yourself, and pay only for results that independent nodes agreed on.
 
+### What you pay for
+
+You pay for proof, not for connectivity. A cloud service connects devices for less, but the data then sits on a server its operator controls, and anyone else has to take the operator's word for it. Here, other people can rely on your device's data without trusting you.
+
+| You are | Your problem | What you get |
+| --- | --- | --- |
+| A team that pays rewards or bills on device data | You collected the data on your own server, so nobody else can check it | Readings signed on the device, receipts from independent nodes, and results settled on chain when a quorum agrees, without building any of it |
+| A buyer of data: an insurer, an auditor, a carbon or energy registry | The seller could have edited what you were given | Every reading traced to one device, a place and a history |
+| A hardware maker | Your boards are the same as everyone else's once they ship | A credential that proves a board is yours, and a board that can pay and earn on its own |
+
+This is worth its price where data turns into money: rewards paid on readings, bills by usage, certificates by energy produced. If the data is only for you, a cloud service is cheaper and you do not need this network. [What a reading proves](#what-a-reading-proves) says exactly what you can rely on and what you cannot.
+
 ### Follow devices
 
 You follow a device by its key, from any machine, with no account. Your app logs in with a key of its own, and every signed message is checked against the device's key before you see it.
@@ -845,6 +857,29 @@ Settling every unit on chain costs a device about $42 a month, 98.5% of it gas; 
 | Every unit, one root per node per hour | 144 | $0.000089 | 58.3% | $1.54 |
 
 A small node costs $0.45 a day and holds about 300 device-jobs, so 1,000 devices need about 40 nodes. Longer units cut gas but settle later and put more pay at risk per unit. Epoch roots keep units short and settle each node's work in one transaction an hour; they are the next protocol change.
+
+### What a reading proves {#what-a-reading-proves}
+
+A reading comes with a chain of proofs. Each one answers one question. Together they show that the reading came from one real device, at a place, and was not changed. They do not show that the sensor's value is true.
+
+| Question | Proof | What it rests on |
+| --- | --- | --- |
+| Who sent it | The device makes its own key and signs every reading on the chip | The key stays on the device; nobody signs without it |
+| Is it a real device | The manufacturer signs a credential for each device and can revoke it | The manufacturer; a fake needs its help |
+| Was it changed or dropped | Each node signs a receipt every 5 seconds for the messages it got, and the device checks the receipts | A node cannot make the device's signature, and has no receipt for a message it dropped |
+| Who decides the result | The assigned nodes each compute it, and it settles on chain only when a quorum signed the same one | Nodes stake, and a node that signs a wrong result is slashed |
+| Where is the device | Round-trip time puts an upper bound on distance, and nearby devices witness each other's radio beacons | Signals do not travel faster than light |
+
+So no one party has to be trusted. The device's owner cannot change signed data or get past the bound on distance. A single node that lies disagrees with the others. And signatures, receipts and settlements are public, so anyone can recompute a result.
+
+What the chain of proofs does not show:
+
+- **That the sensor's value is true.** The device signs whatever its sensor reports. Someone who heats a thermometer gets a valid signature. Comparing readings from nearby devices finds outliers; nothing here does that yet.
+- **That the key was never copied.** The released firmware does not turn on secure boot or flash encryption, so someone holding the board can read its key.
+- **A place far from every oracle.** A round trip of 80 ms still allows 8,000 km. See the [limits of proof of location](#depin).
+- **That the nodes are independent.** A quorum means little when one person runs most of the nodes. The [security model](#security-model) covers what collusion can do.
+
+The accurate claim is that the source of the data can be verified, not that the data is true. Faking a source takes a real board in a real place and risks a revoked credential.
 
 ### Security model
 
