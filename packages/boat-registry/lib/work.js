@@ -74,13 +74,26 @@ export async function postJob (registry, payer, { role, device, spec, params, pa
 }
 
 // the newest of these jobs that this payer has open and that can still pay a
-// whole batch (or a unit); null if there is none
-export async function openJobAmong (registry, ids, payer) {
+// whole batch (or a unit), of this batch size if one is given; null if there
+// is none
+export async function openJobAmong (registry, ids, payer, batchUnits = null) {
   for (const id of [...ids].sort((a, b) => Number(b) - Number(a))) {
     const j = await registry.jobs(id)
+    if (batchUnits !== null && j.batchUnits !== BigInt(batchUnits)) continue
     if (j.payer === payer && j.closesAt === 0n && j.budget >= j.pay * (j.batchUnits || 1n)) return Number(id)
   }
   return null
+}
+
+// these jobs of this payer, other than `keep`, that have not begun to close
+export async function jobsToClose (registry, ids, payer, keep) {
+  const out = []
+  for (const id of ids) {
+    if (Number(id) === Number(keep)) continue
+    const j = await registry.jobs(id)
+    if (j.payer === payer && j.closesAt === 0n) out.push(Number(id))
+  }
+  return out
 }
 
 // a job with its params (from its JobPosted event), checked against its spec
@@ -644,8 +657,13 @@ export class Settler extends EventEmitter {
   _trim () {
     const over = this.queue.length - this.maxQueue
     if (over <= 0) return
-    this.queue.splice(0, over)
+    const out = this.queue.splice(0, over)
     this.stats.dropped += over
+    // out of the queue, not given up: each goes the way of a settlement that
+    // did not land, and comes back after its backoff
+    for (const group of [out.filter((i) => !i.forward && i.kind !== 'batch'), out.filter((i) => i.forward), out.filter((i) => i.kind === 'batch')]) {
+      if (group.length) this._confirm(group, null).catch((e) => this._error(e))
+    }
   }
 
   // a group that could not be sent goes back to the front of the queue. Out of

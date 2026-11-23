@@ -1,0 +1,49 @@
+name: testnet health
+
+# Checks the public testnet from public data. While it is unhealthy there is one
+# open issue, which is what notifies the maintainers; it closes on recovery.
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: testnet-health
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: check
+        id: check
+        run: |
+          set +e
+          node packages/boat-registry/examples/testnet-health.js > report.txt 2>&1
+          code=$?
+          cat report.txt
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: one open issue while unhealthy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODE: ${{ steps.check.outputs.code }}
+        run: |
+          title='Testnet unhealthy'
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          # the check itself could not run: a failed run, not a claim about the network
+          if [ "$CODE" = 2 ]; then exit 1; fi
+          if [ "$CODE" = 1 ] && [ -z "$open" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file report.txt
+          elif [ "$CODE" = 0 ] && [ -n "$open" ]; then
+            gh issue close "$open" --repo "$GITHUB_REPOSITORY" --comment "Healthy again: $(head -1 report.txt)"
+          fi
