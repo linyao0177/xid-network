@@ -27,7 +27,7 @@ import fs from 'fs'
 import HyperDHT from 'hyperdht'
 import { Wallet, NonceManager, Contract, parseEther, formatEther, formatUnits } from 'ethers'
 import { connect, senderOf, SignedInbox } from 'boat-mqtt-node'
-import { attach, providerFor, TEST_TOKEN, ROLES, postJob, verifyJob, storeJob } from '../index.js'
+import { attach, providerFor, TEST_TOKEN, ROLES, postJob, openJobAmong, verifyJob, storeJob } from '../index.js'
 
 const args = process.argv.slice(2)
 const opt = (name, fallback) => {
@@ -265,11 +265,21 @@ async function faucet (address, entry) {
 async function sponsor (device, entry) {
   const pay = 1000000n
   const budget = pay * SPONSOR_UNITS
-  await once(entry, 'fund', async () => (await (await token.mint(wallet.address, budget * 2n + 10000000n)).wait()).hash)
+  const kinds = [['verify', verifyJob({ window: 20 })], ['store', storeJob({ window: 20 })]]
+  // a device that asks again (boat-sim does at every start) keeps the jobs it
+  // has: a second job on the same readings pays the nodes' gas twice for
+  // nothing. (A job this request already posted is found by its step)
+  const open = {}
+  for (const [k] of kinds) {
+    const ids = Object.values(state.jobs).filter((j) => j.device === device && j.role === k && !j.closed && !j.spent).map((j) => j.id)
+    open[k] = entry.steps[k] ? null : await openJobAmong(registry, ids, wallet.address)
+  }
+  const missing = kinds.filter(([k]) => open[k] === null).length
+  if (missing) await once(entry, 'fund', async () => (await (await token.mint(wallet.address, budget * BigInt(missing) + 10000000n)).wait()).hash)
   const jobs = {}
-  for (const [k, terms] of [['verify', verifyJob({ window: 20 })], ['store', storeJob({ window: 20 })]]) {
+  for (const [k, terms] of kinds) {
     // settled in Merkle batches of 6 units: one transaction pays for six
-    jobs[k] = await once(entry, k, () => postJob(registry, wallet, { ...terms, device, pay, quorum: 2, budget, batchUnits: 6 }))
+    jobs[k] = open[k] ?? await once(entry, k, () => postJob(registry, wallet, { ...terms, device, pay, quorum: 2, budget, batchUnits: 6 }))
   }
   return { jobs, units: SPONSOR_UNITS.toString() }
 }

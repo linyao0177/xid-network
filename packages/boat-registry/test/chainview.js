@@ -12,7 +12,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { HDNodeWallet, getBytes, toUtf8Bytes, ZeroAddress } from 'ethers'
-import { deploy, deployTestToken, register, ROLES, SPEC, ChainView, assignJobs, workStatement, batchStatement, batchLeaf, merkleRoot } from '../index.js'
+import { deploy, deployTestToken, register, ROLES, SPEC, ChainView, assignJobs, openJobAmong, workStatement, batchStatement, batchLeaf, merkleRoot } from '../index.js'
 import { startChain, MNEMONIC } from './chain.js'
 
 let passed = 0
@@ -94,9 +94,11 @@ try {
   await mine()
   await shortHold.sync()
   check('after the hold, a spent job no longer holds nodes', heldThen && !shortHold.openJobs().some((j) => j.id === js))
+  check('a spent job is seen as spent, and is not offered to a device that asks again', stepwise.isSpent(js) && (await openJobAmong(reg, [js], payer.address)) === null)
   await (await reg.connect(payer).fundJob(js, PAY)).wait()
   await stepwise.sync()
-  check('funded again with a unit\'s pay, it is open again', stepwise.isOpen(js))
+  check('funded again with a unit\'s pay, it is open again', stepwise.isOpen(js) && !stepwise.isSpent(js))
+  check('an open job is found for its payer, and not for anyone else', (await openJobAmong(reg, [js], payer.address)) === js && (await openJobAmong(reg, [js], ZeroAddress)) === null)
 
   // closing: open until its notice is past, then gone
   const jc = await post(9)
