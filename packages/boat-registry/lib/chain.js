@@ -266,6 +266,11 @@ export class ChainView {
     return !!j && this._open(j) && !j.spent
   }
 
+  // out of budget (it may be funded again): nothing of it can settle now
+  isSpent (id) {
+    return !!this.state.jobs[id]?.spent
+  }
+
   isActive (op, role) {
     const n = this.state.nodes[op]
     return !!n && n.active && (n.roles & role) !== 0

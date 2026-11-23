@@ -139,6 +139,21 @@ try {
   const settledNow = rm.logs.map((l) => { try { return reg.interface.parseLog(l) } catch { return null } }).filter((e) => e && e.name === 'BatchSettled').length
   const perBatch = rm.gasUsed / 20n
   check('settleBatchMany settles 20 batches and skips the one already settled', settledNow === 20, `${rm.gasUsed} gas, ${perBatch} a batch of 6 units (3 signers), ${perBatch / 6n} a unit`)
+
+  // a job out of budget: the transaction still succeeds and costs its gas, so
+  // the Settler asks first (staticCall), and the answer here must be 0
+  const dry = await postJob(reg, payer, { role: ROLES.STORE, device, spec: SPEC.store, params: { window: 20 }, pay: PAY, quorum: 2, budget: 6n * PAY + await reg.jobFee(), batchUnits: 6 })
+  const dryItem = async (index) => {
+    const b = batchOfUnits(index, 6)
+    return { id: dry, batch: b.batch, root: b.root, units: b.units, forwarder: ZeroAddress, sigs: await sign([s1, s2, s3], dry, b) }
+  }
+  const [paid, unpaid] = [await dryItem(40), await dryItem(41)]
+  const canPay = await reg.connect(relay).settleBatchMany.staticCall([paid], { gasLimit: 500000n })
+  await (await reg.connect(relay).settleBatchMany([paid], { gasLimit: 500000n })).wait()
+  const cannotPay = await reg.connect(relay).settleBatchMany.staticCall([unpaid], { gasLimit: 500000n })
+  const wasted = await (await reg.connect(relay).settleBatchMany([unpaid], { gasLimit: 500000n })).wait()
+  const wastedSettled = wasted.logs.some((l) => { try { return reg.interface.parseLog(l)?.name === 'BatchSettled' } catch { return false } })
+  check('the simulation says 1 for a batch the job can pay and 0 for one it cannot, whose transaction would succeed and settle nothing', canPay === 1n && cannotPay === 0n && wasted.status === 1 && !wastedSettled, `the wasted transaction used ${wasted.gasUsed} gas`)
 } catch (err) {
   console.error(err)
   failed++

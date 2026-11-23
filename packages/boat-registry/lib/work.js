@@ -73,6 +73,16 @@ export async function postJob (registry, payer, { role, device, spec, params, pa
   throw new Error('no JobPosted event')
 }
 
+// the newest of these jobs that this payer has open and that can still pay a
+// whole batch (or a unit); null if there is none
+export async function openJobAmong (registry, ids, payer) {
+  for (const id of [...ids].sort((a, b) => Number(b) - Number(a))) {
+    const j = await registry.jobs(id)
+    if (j.payer === payer && j.closesAt === 0n && j.budget >= j.pay * (j.batchUnits || 1n)) return Number(id)
+  }
+  return null
+}
+
 // a job with its params (from its JobPosted event), checked against its spec
 export async function readJob (registry, id) {
   const j = await registry.jobs(id)
@@ -373,6 +383,10 @@ export function settleGasLimit (group) {
   return gas
 }
 
+// the operator cannot pay for a transaction: nothing will go out until it is
+// funded, so there is no point in asking again soon
+const isNoGas = (err) => !!err && (err.code === 'INSUFFICIENT_FUNDS' || /insufficient funds/i.test(`${err.shortMessage || ''} ${err.message || ''} ${err.error?.message || ''}`))
+
 // Collects work messages (its own and other nodes') and settles units on the
 // registry: once `quorum` active nodes signed the same result it waits
 // settleDelayMs for more signers, then the signer with the lowest address
@@ -390,8 +404,17 @@ export class Settler extends EventEmitter {
   // knownActive(operator, role): false for a key the node's view of the chain
   // does not know as active in the role (lib/chain.js); a batch statement by
   // it is refused without asking the chain
-  constructor ({ registry, operator, ctx, jobs, settleDelayMs = 5000, backupMs = 20000, tx = (fn) => fn(), batchMs = 500, batchSize = 40, maxAgeMs = 3600000, publish = null, batchMemory = null, batchGraceMs = null, batchIdleMs = null, knownActive = null }) {
+  // maxQueue: settlements kept waiting while nothing can be sent (the newest)
+  // holdMs, maxHoldMs: after a failed send, no other for holdMs, doubling up
+  // to maxHoldMs; noGasHoldMs: the same when the operator is out of gas
+  constructor ({ registry, operator, ctx, jobs, settleDelayMs = 5000, backupMs = 20000, tx = (fn) => fn(), batchMs = 500, batchSize = 40, maxAgeMs = 3600000, publish = null, batchMemory = null, batchGraceMs = null, batchIdleMs = null, knownActive = null, maxQueue = 2000, holdMs = 1000, maxHoldMs = 30000, noGasHoldMs = 60000 }) {
     super()
+    this.maxQueue = maxQueue
+    this.holdMs = holdMs
+    this.maxHoldMs = maxHoldMs
+    this.noGasHoldMs = noGasHoldMs
+    this._holdFor = 0 // the last hold after a failed send
+    this._holdUntil = 0
     this.knownActive = knownActive
     this.publish = publish
     this.batchMemory = batchMemory
@@ -409,7 +432,7 @@ export class Settler extends EventEmitter {
     this.backupMs = backupMs
     this.units = new Map() // job:unit -> { results: Map(result -> Map(operator -> w)), timer, done }
     this.active = new Map() // operator:role -> { ok, at }
-    this.stats = { settled: 0, submitted: 0, paid: 0n, quorums: 0, attempts: 0, waits: 0, errors: {}, split: 0, quorumMs: [0, 0, 0, 0, 0, 0], transitMs: [0, 0, 0, 0, 0, 0], batchesSigned: 0, batchesSettled: 0, batchUnits: 0, batchesAdopted: 0, forged: 0 }
+    this.stats = { settled: 0, submitted: 0, paid: 0n, quorums: 0, attempts: 0, waits: 0, errors: {}, split: 0, quorumMs: [0, 0, 0, 0, 0, 0], transitMs: [0, 0, 0, 0, 0, 0], batchesSigned: 0, batchesSettled: 0, batchUnits: 0, batchesAdopted: 0, forged: 0, notSent: 0, dropped: 0 }
     this.queue = [] // units to settle in the next batch
     this.batchSize = batchSize
     this._flushTimer = setInterval(() => this._flush().catch((e) => this.emit('error', e)), batchMs)
@@ -607,8 +630,51 @@ export class Settler extends EventEmitter {
     const item = job.role === ROLES.FORWARD
       ? { forward: true, k, job, unit, result, root: merkleRoot(d.leaves.map(storeLeaf)), forwarder: d.forwarder, sigs: signers.map((x) => x.signature), signers: signers.length, attempt }
       : { forward: false, k, job, unit, result, sigs: signers.map((x) => x.signature), signers: signers.length, attempt }
+    this._enqueue(item)
+  }
+
+  _enqueue (item) {
     this.queue.push(item)
+    this._trim()
     if (this.queue.length >= this.batchSize) this._flush().catch((e) => this.emit('error', e))
+  }
+
+  // while nothing can be sent the queue must not grow without end: the oldest
+  // settlements go first
+  _trim () {
+    const over = this.queue.length - this.maxQueue
+    if (over <= 0) return
+    this.queue.splice(0, over)
+    this.stats.dropped += over
+  }
+
+  // a group that could not be sent goes back to the front of the queue. Out of
+  // gas it waits as long as it takes; after any other error it is tried a few
+  // times, and what is returned goes the way of a settlement that did not land
+  _requeue (group, err = null) {
+    const noGas = isNoGas(err)
+    const back = []
+    const gone = []
+    for (const i of group) {
+      const u = i.kind === 'batch' ? i.b : this.units.get(i.k)
+      if (u) u.sending = false
+      if (err && !noGas && (i.sendErrors = (i.sendErrors || 0) + 1) >= 6) gone.push(i)
+      else back.push(i)
+    }
+    this.queue.unshift(...back)
+    this._trim()
+    return gone
+  }
+
+  // after a failed send nothing goes out for a while: a rate-limited RPC gets
+  // room, and a node out of gas stops asking every half second
+  _hold (err) {
+    if (isNoGas(err)) {
+      this._holdUntil = Date.now() + this.noGasHoldMs
+      return
+    }
+    this._holdFor = Math.min(this.maxHoldMs, (this._holdFor || this.holdMs / 2) * 2)
+    this._holdUntil = Date.now() + this._holdFor
   }
 
   // sends what is queued, one batch per kind of settlement. A batch holds the
@@ -617,7 +683,7 @@ export class Settler extends EventEmitter {
   // a node to a batch every few seconds, so first submitters fell behind and
   // backups sent the same units again
   async _flush () {
-    if (this._flushing || this.queue.length === 0) return
+    if (this._flushing || this.queue.length === 0 || Date.now() < this._holdUntil) return
     this._flushing = true
     const confirming = []
     try {
@@ -628,22 +694,36 @@ export class Settler extends EventEmitter {
       })
       for (const group of [items.filter((i) => !i.forward && i.kind !== 'batch'), items.filter((i) => i.forward), items.filter((i) => i.kind === 'batch')]) {
         if (group.length === 0) continue
+        if (Date.now() < this._holdUntil) { // the group before this one failed to send
+          this._requeue(group)
+          continue
+        }
         for (const i of group) { const u = i.kind === 'batch' ? i.b : this.units.get(i.k); if (u) u.sending = true }
+        // the gas limit is set, not estimated: settleMany and settleBatchMany
+        // try each item and skip one that fails, so an estimate finds the
+        // least gas at which the transaction succeeds, which is too little
+        // for the items (they run out of gas, are skipped, and the transaction
+        // settles nothing). Only the gas used is paid
+        const gasLimit = settleGasLimit(group)
+        const method = group[0].kind === 'batch' ? 'settleBatchMany' : 'settleMany'
+        const calls = group[0].kind === 'batch'
+          ? group.map((i) => ({ id: i.job.id, batch: i.batch, root: i.root, units: i.units, forwarder: i.forwarder, sigs: i.sigs }))
+          : group.map((i) => (i.forward
+            ? { id: i.job.id, unit: i.unit, result: i.root, forwarder: i.forwarder, sigs: i.sigs }
+            : { id: i.job.id, unit: i.unit, result: i.result, forwarder: ZeroAddress, sigs: i.sigs }))
         let tx = null
         try {
+          // Skipped items do not revert the transaction, so one that settles
+          // nothing still succeeds and still costs its gas (a job out of
+          // budget burned a node's whole balance that way). Ask first: it
+          // goes out only if it would settle something
+          if ((await this.registry[method].staticCall(calls, { gasLimit })) === 0n) {
+            this.stats.notSent++
+            confirming.push(this._confirm(group, null))
+            continue
+          }
           tx = await this.tx(async () => {
-            // the gas limit is set, not estimated: settleMany and
-            // settleBatchMany try each item and skip one that fails, so an
-            // estimate finds the least gas at which the transaction succeeds,
-            // which is too little for the items (they run out of gas, are
-            // skipped, and the transaction settles nothing). Only the gas used
-            // is paid
-            const gasLimit = settleGasLimit(group)
-            const tx = group[0].kind === 'batch'
-              ? await this.registry.settleBatchMany(group.map((i) => ({ id: i.job.id, batch: i.batch, root: i.root, units: i.units, forwarder: i.forwarder, sigs: i.sigs })), { gasLimit })
-              : await this.registry.settleMany(group.map((i) => (i.forward
-                ? { id: i.job.id, unit: i.unit, result: i.root, forwarder: i.forwarder, sigs: i.sigs }
-                : { id: i.job.id, unit: i.unit, result: i.result, forwarder: ZeroAddress, sigs: i.sigs })), { gasLimit })
+            const tx = await this.registry[method](calls, { gasLimit })
             // the next transaction takes the next nonce once the node sees this one
             const provider = this.operator.provider
             for (let t = 0; t < 100; t++) {
@@ -652,8 +732,13 @@ export class Settler extends EventEmitter {
             }
             return tx
           })
+          this._holdFor = 0
         } catch (err) {
           this._error(err)
+          this._hold(err)
+          const gone = this._requeue(group, err)
+          if (gone.length) confirming.push(this._confirm(gone, null))
+          continue
         }
         confirming.push(this._confirm(group, tx))
       }
@@ -1027,8 +1112,7 @@ export class Settler extends EventEmitter {
       return
     }
     this.stats.attempts++
-    this.queue.push({ kind: 'batch', k: 'b:' + job.id + ':' + b.batch, b, job, batch: b.batch, root: b.mine.root, units: b.mine.units, forwarder: fwd, sigs: signers.map((w) => w.signature), signers: signers.length, attempt })
-    if (this.queue.length >= this.batchSize) this._flush().catch((e) => this.emit('error', e))
+    this._enqueue({ kind: 'batch', k: 'b:' + job.id + ':' + b.batch, b, job, batch: b.batch, root: b.mine.root, units: b.mine.units, forwarder: fwd, sigs: signers.map((w) => w.signature), signers: signers.length, attempt })
   }
 
   _batchDone (b, by, extra = {}) {

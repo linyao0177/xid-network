@@ -344,5 +344,136 @@ async function statement (w, j, batch, leaves, forwarder = ZeroAddress) {
   s.close()
 }
 
+// ---- what goes out (a job out of budget once burned every node's gas) --------
+
+// a registry whose settleBatchMany counts simulations and sends
+function sending ({ simulate = async () => 1n, send = async () => {} } = {}) {
+  const calls = { simulated: 0, sent: 0 }
+  const method = async () => {
+    calls.sent++
+    await send(calls.sent)
+    return { nonce: calls.sent, wait: async () => ({ logs: [], gasUsed: 1n }) }
+  }
+  method.staticCall = async () => {
+    calls.simulated++
+    return simulate(calls.simulated)
+  }
+  return { calls, reg: { ...registry, settleBatchMany: method, settleMany: method } }
+}
+const sender = (reg, opts = {}) => new Settler({
+  registry: reg,
+  operator: { address: A.address, provider: { getTransactionCount: async () => 1e9 } },
+  ctx,
+  jobs: new Map([[job.id, job]]),
+  batchMs: 3600000, // flushed by hand
+  ...opts
+})
+const queued = (n = 0) => ({ kind: 'batch', k: `b:${job.id}:${n}`, b: { done: false }, job, batch: BigInt(n), root: ZeroHash, units: 3, forwarder: ZeroAddress, sigs: [], signers: 2, attempt: 12 })
+
+// 15. a transaction that would settle nothing is not sent
+{
+  const { calls, reg } = sending({ simulate: async () => 0n })
+  const s = sender(reg)
+  s.queue.push(queued())
+  await s._flush()
+  check('a settlement the simulation says settles nothing is not sent', calls.simulated === 1 && calls.sent === 0 && s.stats.notSent === 1 && s.queue.length === 0, `sent ${calls.sent}`)
+  s.close()
+}
+
+// 16. one that settles something is
+{
+  const { calls, reg } = sending()
+  const s = sender(reg)
+  s.queue.push(queued())
+  await s._flush()
+  check('a settlement that would settle something is sent once', calls.simulated === 1 && calls.sent === 1 && s.stats.notSent === 0)
+  s.close()
+}
+
+// 17. out of gas: one try, a long wait, and the settlement is still there
+{
+  const { calls, reg } = sending({ send: async (n) => { if (n === 1) throw Object.assign(new Error('insufficient funds for intrinsic transaction cost'), { code: 'INSUFFICIENT_FUNDS' }) } })
+  const s = sender(reg, { noGasHoldMs: 120 })
+  s.queue.push(queued())
+  await s._flush()
+  const kept = s.queue.length === 1
+  await s._flush() // within the hold
+  const held = calls.sent === 1 && calls.simulated === 1
+  await sleep(150)
+  await s._flush()
+  check('out of gas the node stops sending for a while, keeps the settlement, and sends it once it can', kept && held && calls.sent === 2 && s.queue.length === 0, `sent ${calls.sent}, queued ${s.queue.length}`)
+  s.close()
+}
+
+// 18. a rate-limited RPC: the wait doubles, and a success ends it
+{
+  const { calls, reg } = sending({ simulate: async (n) => { if (n <= 2) throw new Error('could not coalesce error (rate limit exceeded)'); return 1n } })
+  const s = sender(reg, { holdMs: 20, maxHoldMs: 1000 })
+  s.queue.push(queued())
+  await s._flush()
+  const first = s._holdFor
+  await sleep(30)
+  await s._flush()
+  const second = s._holdFor
+  await sleep(50)
+  await s._flush()
+  check('after RPC errors the wait doubles, and a send that works ends it', first === 20 && second === 40 && s._holdFor === 0 && calls.sent === 1, `waits ${first}, ${second}, then ${s._holdFor}`)
+  s.close()
+}
+
+// 19. an error that does not pass is not retried for ever
+{
+  const { calls, reg } = sending({ simulate: async () => { throw new Error('some other error') } })
+  const s = sender(reg, { holdMs: 1, maxHoldMs: 1 })
+  s.queue.push(queued())
+  for (let i = 0; i < 8 && s.queue.length; i++) {
+    await sleep(3)
+    await s._flush()
+  }
+  check('a settlement that keeps failing to send leaves the queue', s.queue.length === 0 && calls.simulated === 6 && calls.sent === 0, `tried ${calls.simulated}`)
+  s.close()
+}
+
+// 20. the queue has an end, and keeps the newest
+{
+  const { reg } = sending()
+  const s = sender(reg, { maxQueue: 3 })
+  s._holdUntil = Date.now() + 60000
+  for (let n = 0; n < 5; n++) s._enqueue(queued(n))
+  check('while nothing can be sent the queue keeps only the newest settlements', s.queue.length === 3 && s.stats.dropped === 2 && s.queue[0].batch === 2n)
+  s.close()
+}
+
+// 21. a job out of budget: its workers stop, and start again when it is funded
+{
+  let spent = true
+  let closed = 0
+  let started = 0
+  let replayed = 0
+  const paused = { id: 9, role: ROLES.STORE, device, batchUnits: 3 }
+  const worker = { mode: null, close: async () => { closed++ } }
+  const node = {
+    syncChain: async () => {},
+    auditor: null,
+    jobs: new Map([[9, paused]]),
+    workers: new Map([[9, [worker]]]),
+    waiting: new Map(),
+    seenJobs: 10,
+    registry: { jobCount: async () => 10n },
+    chain: { block: 1, state: { jobCount: 10, jobs: { 9: {} } }, isSpent: () => spent },
+    log: () => {},
+    pause: BoatNode.prototype.pause,
+    assigned: async () => true,
+    ensureWorkers: async (j) => { started++; node.workers.set(j.id, [worker]); return true },
+    replayOwn: () => { replayed++ }
+  }
+  await BoatNode.prototype.pollJobs.call(node)
+  await BoatNode.prototype.pollJobs.call(node)
+  check('a job out of budget loses its workers once and stays known to the node', closed === 1 && !node.workers.has(9) && node.jobs.has(9) && started === 0, `closed ${closed}, started ${started}`)
+  spent = false
+  await BoatNode.prototype.pollJobs.call(node)
+  check('funded again, its workers start and its signed units are replayed', started === 1 && replayed === 1 && node.workers.has(9))
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

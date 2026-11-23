@@ -413,6 +413,9 @@ export class BoatNode extends EventEmitter {
     for (const job of [...this.jobs.values()]) {
       // closed (the chain view dropped it): nothing of it is needed again
       if (this.chain.block >= 0 && job.id < this.chain.state.jobCount && !(job.id in this.chain.state.jobs)) { await this.retire(job); continue }
+      // out of budget: no more work on it until it is funded again, when the
+      // next line starts its workers
+      if (this.chain.isSpent(job.id)) { await this.pause(job); continue }
       if (!this.workers.has(job.id)) { if (await this.ensureWorkers(job)) this.replayOwn(job) } else if (job.role !== ROLES.FORWARD && !(await this.assigned(job, job.role))) {
         this.workers.delete(job.id)
         this._dropped = (this._dropped || 0) + 1
@@ -539,6 +542,17 @@ export class BoatNode extends EventEmitter {
     }
     this._batchMem.set(id, mem)
     return mem
+  }
+
+  // a job out of budget: its workers stop signing units nobody can pay for.
+  // The job stays, and its device stays followed: the usual case is a job that
+  // runs dry and is funded again
+  async pause (job) {
+    const list = this.workers.get(job.id)
+    if (!list) return
+    for (const w of list) if (w.close) await w.close().catch(() => {})
+    this.workers.delete(job.id)
+    this.log(`job ${job.id}: budget spent, paused until it is funded again`)
   }
 
   // a closed job: its workers stop, and when it was the last one on its
