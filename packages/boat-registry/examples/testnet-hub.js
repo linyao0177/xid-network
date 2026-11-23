@@ -4,7 +4,8 @@
 // usage: boat-testnet-hub --key-file <hub wallet> --token-file <hub token>
 //        [--testnet https://iot.xid.network/testnet.json] [--api https://iot.xid.network]
 //        [--state hub-state.json] [--drip-gas 0.1] [--drip-token 1000000000]
-//        [--sponsor-units 500] [--depin <dir> --depin-home <node key>]
+//        [--sponsor-units 500] [--batch-units 24]
+//        [--depin <dir> --depin-home <node key>]
 //
 // It follows the registry's events (nodes, jobs, settlements, slashes),
 // watches what devices publish on every public node, and every 30 s pushes
@@ -13,7 +14,8 @@
 //   faucet <address>: --drip-gas Arc USDC for gas and --drip-token of the
 //     test stake token (TSUSD, 6 decimals), enough to stake a node and pay jobs;
 //   sponsor <device>: verify and store jobs on the device's readings, paid by
-//     the hub in TSUSD (--sponsor-units units each, 1 TSUSD a unit);
+//     the hub in TSUSD (--sponsor-units units each, 1 TSUSD a unit), settled
+//     in batches of --batch-units. A device keeps one open job of each kind;
 //   enroll <device>: enrolls the device in the testnet's DePIN network
 //     (--depin, run by xid-depin's lib/hub.js: it deploys the network, keeps
 //     its home record at --depin-home, claims its rewards, and the snapshot
@@ -27,7 +29,7 @@ import fs from 'fs'
 import HyperDHT from 'hyperdht'
 import { Wallet, NonceManager, Contract, parseEther, formatEther, formatUnits } from 'ethers'
 import { connect, senderOf, SignedInbox } from 'boat-mqtt-node'
-import { attach, providerFor, TEST_TOKEN, ROLES, postJob, openJobAmong, verifyJob, storeJob } from '../index.js'
+import { attach, providerFor, TEST_TOKEN, ROLES, postJob, openJobAmong, jobsToClose, verifyJob, storeJob } from '../index.js'
 
 const args = process.argv.slice(2)
 const opt = (name, fallback) => {
@@ -41,6 +43,8 @@ const STATE = opt('state', 'hub-state.json')
 const DRIP_GAS = opt('drip-gas', '0.1')
 const DRIP_TOKEN = BigInt(opt('drip-token', '1000000000'))
 const SPONSOR_UNITS = BigInt(opt('sponsor-units', '500'))
+const BATCH_UNITS = Number(opt('batch-units', '24'))
+if (!Number.isInteger(BATCH_UNITS) || BATCH_UNITS < 1 || BATCH_UNITS > 65535) throw new Error('--batch-units: a whole number from 1 to 65535')
 
 const src = opt('testnet', 'https://iot.xid.network/testnet.json')
 const testnet = src.startsWith('http') ? await (await fetch(src)).json() : JSON.parse(fs.readFileSync(src, 'utf8'))
@@ -77,7 +81,8 @@ async function timeOf (n) {
 }
 
 // total: what the settlement paid (Settled: one unit's pay; BatchSettled: the batch's)
-function settle (s, id, units, total, hour) {
+function settle (s, id, units, total, hour, at) {
+  s.lastSettled = Math.max(s.lastSettled || 0, at)
   const j = s.jobs[id]
   if (j) {
     j.units += units
@@ -119,9 +124,10 @@ async function follow () {
           break
         case 'JobFunded': { const j = next.jobs[Number(a.id)]; if (j) { j.budget = (BigInt(j.budget) + a.amount).toString(); j.spent = false } break }
         case 'JobSpent': { const j = next.jobs[Number(a.id)]; if (j) j.spent = true; break }
+        case 'JobClosing': { const j = next.jobs[Number(a.id)]; if (j) j.closesAt = Number(a.closesAt); break }
         case 'JobClosed': { const j = next.jobs[Number(a.id)]; if (j) j.closed = true; break }
-        case 'Settled': settle(next, Number(a.id), 1, a.pay, hour); txs.add(l.transactionHash); break
-        case 'BatchSettled': settle(next, Number(a.id), Number(a.units), a.pay, hour); txs.add(l.transactionHash); break
+        case 'Settled': settle(next, Number(a.id), 1, a.pay, hour, at); txs.add(l.transactionHash); break
+        case 'BatchSettled': settle(next, Number(a.id), Number(a.units), a.pay, hour, at); txs.add(l.transactionHash); break
         case 'Slashed': next.slashes.push({ operator: a.operator, amount: a.amount.toString(), reason: a.reason, at }); break
       }
     }
@@ -266,20 +272,36 @@ async function sponsor (device, entry) {
   const pay = 1000000n
   const budget = pay * SPONSOR_UNITS
   const kinds = [['verify', verifyJob({ window: 20 })], ['store', storeJob({ window: 20 })]]
-  // a device that asks again (boat-sim does at every start) keeps the jobs it
-  // has: a second job on the same readings pays the nodes' gas twice for
-  // nothing. (A job this request already posted is found by its step)
+  // a device that asks again (boat-sim does at every start) keeps the job of
+  // each kind it has, if it settles in batches of this size: a second job on
+  // the same readings pays the nodes' gas twice for nothing. (A job this
+  // request already posted is found by its step)
   const open = {}
+  const ids = {}
   for (const [k] of kinds) {
-    const ids = Object.values(state.jobs).filter((j) => j.device === device && j.role === k && !j.closed && !j.spent).map((j) => j.id)
-    open[k] = entry.steps[k] ? null : await openJobAmong(registry, ids, wallet.address)
+    ids[k] = Object.values(state.jobs).filter((j) => j.device === device && j.role === k && !j.closed && !j.spent && !j.closesAt).map((j) => j.id)
+    open[k] = entry.steps[k] ? null : await openJobAmong(registry, ids[k], wallet.address, BATCH_UNITS)
   }
   const missing = kinds.filter(([k]) => open[k] === null).length
   if (missing) await once(entry, 'fund', async () => (await (await token.mint(wallet.address, budget * BigInt(missing) + 10000000n)).wait()).hash)
   const jobs = {}
   for (const [k, terms] of kinds) {
-    // settled in Merkle batches of 6 units: one transaction pays for six
-    jobs[k] = open[k] ?? await once(entry, k, () => postJob(registry, wallet, { ...terms, device, pay, quorum: 2, budget, batchUnits: 6 }))
+    // settled in Merkle batches: one transaction pays for BATCH_UNITS units
+    jobs[k] = open[k] ?? await once(entry, k, () => postJob(registry, wallet, { ...terms, device, pay, quorum: 2, budget, batchUnits: BATCH_UNITS }))
+  }
+  // the device's other open jobs of these kinds would pay for the same
+  // readings: they close after the registry's notice. One that fails to close
+  // does not cost the device its job, and is tried at its next request
+  for (const [k] of kinds) {
+    try {
+      for (const id of await jobsToClose(registry, ids[k], wallet.address, jobs[k])) {
+        await once(entry, `close-${id}`, async () => (await (await registry.closeJob(id)).wait()).hash)
+        log(`job ${id}: closing, replaced by job ${jobs[k]}`)
+      }
+    } catch (err) {
+      wallet.reset()
+      log(`sponsor ${device.slice(0, 14)}…: closing old ${k} jobs: ${err.shortMessage || err.message}`)
+    }
   }
   return { jobs, units: SPONSOR_UNITS.toString() }
 }
@@ -381,10 +403,11 @@ async function snapshot () {
       devicesLive: devs.filter((d) => now - d.last < 600000).length,
       devicesSeen: devices.size,
       jobs: Object.keys(state.jobs).length,
-      openJobs: Object.values(state.jobs).filter((j) => !j.closed && !j.spent).length,
+      openJobs: Object.values(state.jobs).filter((j) => !j.closed && !j.spent && !j.closesAt).length,
       unitsSettled: state.units,
       paid: formatUnits(state.paid, 6),
       settleTxs: state.txs,
+      lastSettledAt: state.lastSettled ?? null,
       slashes: state.slashes.length
     },
     nodes,

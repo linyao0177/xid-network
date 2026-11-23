@@ -7,7 +7,7 @@
 // and the gas a batch costs.
 
 import { HDNodeWallet, id, getBytes, ZeroAddress } from 'ethers'
-import { deploy, deployTestToken, register, asBytes32, ROLES, postJob, SPEC, batchStatement, batchKey, batchLeaf, merkleRoot, workStatement, sortedSignatures } from '../index.js'
+import { deploy, deployTestToken, register, asBytes32, ROLES, postJob, openJobAmong, jobsToClose, SPEC, batchStatement, batchKey, batchLeaf, merkleRoot, workStatement, sortedSignatures } from '../index.js'
 import { startChain, MNEMONIC } from './chain.js'
 
 let passed = 0
@@ -154,6 +154,24 @@ try {
   const wasted = await (await reg.connect(relay).settleBatchMany([unpaid], { gasLimit: 500000n })).wait()
   const wastedSettled = wasted.logs.some((l) => { try { return reg.interface.parseLog(l)?.name === 'BatchSettled' } catch { return false } })
   check('the simulation says 1 for a batch the job can pay and 0 for one it cannot, whose transaction would succeed and settle nothing', canPay === 1n && cannotPay === 0n && wasted.status === 1 && !wastedSettled, `the wasted transaction used ${wasted.gasUsed} gas`)
+
+  // a batch of 24 units is one root on chain, as a batch of 6 is
+  const terms = { role: ROLES.STORE, device, spec: SPEC.store, params: { window: 20 }, pay: PAY, quorum: 2, budget: 100n * PAY }
+  const job6 = await postJob(reg, payer, { ...terms, batchUnits: 6 })
+  const job24 = await postJob(reg, payer, { ...terms, batchUnits: 24 })
+  const b6 = batchOfUnits(70, 6)
+  const b24 = batchOfUnits(80, 24)
+  const gas6 = (await (await reg.connect(relay).settleBatch(job6, b6.batch, b6.root, b6.units, ZeroAddress, await sign([s1, s2], job6, b6))).wait()).gasUsed
+  const gas24 = (await (await reg.connect(relay).settleBatch(job24, b24.batch, b24.root, b24.units, ZeroAddress, await sign([s1, s2], job24, b24))).wait()).gasUsed
+  check('a batch of 24 units costs within 5% of the gas of a batch of 6', gas24 * 100n <= gas6 * 105n, `${gas6} and ${gas24} gas`)
+
+  // what the hub keeps of a device's jobs, and what it closes
+  check('an open job is found only at the batch size asked for', (await openJobAmong(reg, [job6, job24], payer.address, 6)) === job6 && (await openJobAmong(reg, [job6, job24], payer.address, 24)) === job24 && (await openJobAmong(reg, [job6, job24], payer.address, 12)) === null)
+  const toClose = await jobsToClose(reg, [job6, job24], payer.address, job24)
+  check('the job kept is not closed, the other is', toClose.length === 1 && toClose[0] === Number(job6))
+  check('a job of another payer is never closed', (await jobsToClose(reg, [job6], thief.address, job24)).length === 0)
+  await (await reg.connect(payer).closeJob(job6)).wait()
+  check('a job already closing is not closed again (the second call would revert during its notice)', (await jobsToClose(reg, [job6, job24], payer.address, job24)).length === 0)
 } catch (err) {
   console.error(err)
   failed++
