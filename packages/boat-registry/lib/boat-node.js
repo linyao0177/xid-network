@@ -856,7 +856,7 @@ export class BoatNode extends EventEmitter {
       for (const [unit, m] of w.memory.entries()) {
         if (!m || typeof m !== 'object' || !m.signature) continue // (older files: the result alone)
         const msg = { v: 1, job: job.id, unit, role: job.role, device: job.device, result: m.result, operator: this.operator.address, node: this.ctx.nodeKey, detail: m.forwarder ? { forwarder: m.forwarder } : {}, signature: m.signature }
-        this.settler.add(msg, { own: true }).catch(() => {})
+        this.settler.add(msg, { own: true, replay: true }).catch(() => {})
       }
     }
   }

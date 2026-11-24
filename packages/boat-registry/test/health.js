@@ -2,7 +2,7 @@
 
 import { Interface } from 'ethers'
 import { REGISTRY } from '../index.js'
-import { assess, countSettlements, SETTLE_SELECTORS } from '../lib/health.js'
+import { assess, BATCH_SETTLED_TOPIC, countSettlements, missedBatches, SETTLE_SELECTORS } from '../lib/health.js'
 
 let passed = 0
 let failed = 0
@@ -61,6 +61,20 @@ const items = [
 ]
 const counted = countSettlements(items, hour, hour + 3600)
 check('only settlements inside the hour count, and the list ends at an older one', counted.count === 2 && counted.done === true, JSON.stringify(counted))
+
+check('the batch topic is BatchSettled', BATCH_SETTLED_TOPIC === abi.getEvent('BatchSettled').topicHash)
+const BOOT = 1795431724n
+const settledBatch = (job, index, block, boot = BOOT) => ({ job, batch: (boot << 32n) | BigInt(index), block })
+const live = [settledBatch(70, 1, 100), settledBatch(70, 3, 200), settledBatch(70, 4, 300), settledBatch(71, 1, 100), settledBatch(71, 2, 150), settledBatch(71, 3, 200)]
+const gap = missedBatches(live, 0, 1000)
+check('a batch skipped between two settled ones is found', gap.length === 1 && gap[0].job === 70 && gap[0].batch === `${BOOT}:2`, JSON.stringify(gap))
+check('...in any order of settling', missedBatches([...live].reverse(), 0, 1000).length === 1)
+check('an old gap is not news', missedBatches(live, 201, 1000).length === 0)
+check('a very new gap may be batches settling out of order', missedBatches(live, 0, 199).length === 0)
+check('batches of two boots leave no gap between them', missedBatches([settledBatch(70, 5, 100), settledBatch(70, 0, 200, BOOT + 1n)], 0, 1000).length === 0)
+check('several batches skipped are each named', missedBatches([settledBatch(70, 1, 100), settledBatch(70, 4, 200)], 0, 1000).length === 2)
+check('a skipped batch is an alert', codes(assess(snap(), { now, missed: gap })).includes('missed-batch'))
+check('a chain that did not answer is no alert', assess(snap(), { now, missed: null }).ok)
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
