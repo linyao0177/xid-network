@@ -5,6 +5,9 @@
 // settleMany and settleBatchMany (test/health.js checks them against the ABI)
 export const SETTLE_SELECTORS = ['0x8bd7989c', '0x00ffbcab']
 
+// BatchSettled(uint256 indexed id, uint64 indexed batch, bytes32 root, uint32 units, uint256 signers, uint256 pay)
+export const BATCH_SETTLED_TOPIC = '0x5534f988519eb030e27dda557d0f5991adf9544ac609b3c5e52ff4a50d5e4d97'
+
 export const HEALTH_LIMITS = {
   maxSnapshotAgeMs: 10 * 60000, // the hub pushes one every 30 s
   minGas: 0.05, // USDC on a node: about 20 settlements
@@ -32,9 +35,34 @@ function hasWork (snap, now) {
   return snap.devices.some((d) => now - d.last < 600000 && (d.jobs || []).some((id) => open.has(id)))
 }
 
+// The batches a job skipped: a later batch of the same boot settled and this
+// one did not, which hourly settlements elsewhere would hide. settled:
+// [{ job, batch (bigint), block }]. Only a gap whose next batch settled in
+// fromBlock..toBlock counts: an old gap is not news, and a very new one may
+// only be two batches settling out of order.
+export function missedBatches (settled, fromBlock, toBlock) {
+  const runs = new Map()
+  for (const s of settled) {
+    const k = `${s.job}:${s.batch >> 32n}`
+    if (!runs.has(k)) runs.set(k, [])
+    runs.get(k).push({ index: s.batch & 0xffffffffn, block: s.block })
+  }
+  const missed = []
+  for (const [k, list] of runs) {
+    const [job, boot] = k.split(':')
+    list.sort((a, b) => (a.index < b.index ? -1 : 1))
+    for (let i = 1; i < list.length; i++) {
+      if (list[i].block < fromBlock || list[i].block > toBlock) continue
+      for (let n = list[i - 1].index + 1n; n < list[i].index; n++) missed.push({ job: Number(job), batch: `${boot}:${n}` })
+    }
+  }
+  return missed
+}
+
 // sent: { hour, count }, the settlement transactions the nodes sent in that
-// hour (null when they could not be read). Returns { ok, alerts, metrics }
-export function assess (snap, { now = Date.now(), sent = null, limits = {} } = {}) {
+// hour; missed: from missedBatches (either null when it could not be read).
+// Returns { ok, alerts, metrics }
+export function assess (snap, { now = Date.now(), sent = null, missed = null, limits = {} } = {}) {
   const l = { ...HEALTH_LIMITS, ...limits }
   const alerts = []
   const alert = (code, text) => alerts.push({ code, text })
@@ -66,6 +94,8 @@ export function assess (snap, { now = Date.now(), sent = null, limits = {} } = {
     if (empty >= l.minEmpty && emptyShare > l.maxEmptyShare) alert('empty-settlements', `${empty} of ${sent.count} settlement transactions in the last full hour settled nothing`)
   }
 
+  if (missed && missed.length) alert('missed-batch', `not settled while a later batch was: ${missed.map((m) => `job ${m.job} batch ${m.batch}`).join(', ')}`)
+
   return {
     ok: alerts.length === 0,
     alerts,
@@ -75,7 +105,8 @@ export function assess (snap, { now = Date.now(), sent = null, limits = {} } = {
       quietMin: quietMs === null ? null : minutes(quietMs),
       sent: sent ? sent.count : null,
       empty,
-      emptyShare
+      emptyShare,
+      missedBatches: missed ? missed.length : null
     }
   }
 }

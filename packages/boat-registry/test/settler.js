@@ -344,6 +344,93 @@ async function statement (w, j, batch, leaves, forwarder = ZeroAddress) {
   s.close()
 }
 
+// 15. units replayed after a restart, or caught up in a burst, are not the job's pace
+{
+  const s = settler(A, memory(), [])
+  const kept = {}
+  for (const u of [130, 131, 132]) {
+    const w = await work(A, u)
+    kept[String(u)] = { result: w.result, signature: w.signature, forwarder: null }
+  }
+  const node = { workers: new Map([[job.id, [{ mode: null, memory: { entries: () => Object.entries(kept) } }]]]), operator: A, ctx, settler: s }
+  BoatNode.prototype.replayOwn.call(node, job)
+  await sleep(5)
+  check('replayed units do not set the pace of a job', !s.gaps.has(job.id))
+  for (const u of [133, 134, 135]) await s.add(await work(A, u), { own: true })
+  check('units caught up in a burst do not set it either', s.gaps.get(job.id).gap === 0, `gap ${s.gaps.get(job.id).gap}`)
+  s.close()
+  for (const b of s.batches.values()) for (const t of [b.idle, b.closing]) if (t) clearTimeout(t)
+}
+
+// 16. a close that found nothing to sign does not stop the batch closing later
+{
+  const out = []
+  const s = settler(A, memory(), out)
+  await s.add(await work(A, 141), { own: true }) // batch 47, nothing agreed yet
+  const b = s.batches.get(job.id + ':47')
+  s._close(b, 0)
+  await sleep(30)
+  check('a batch with nothing to sign stays unsigned', !b.mine)
+  for (const u of [141, 142, 143]) {
+    if (u !== 141) await s.add(await work(A, u), { own: true })
+    await s.add(await work(B, u))
+  }
+  await sleep(150)
+  check('...and signs when its units come', b.mine && b.mine.units === 3, `units ${b.mine && b.mine.units}`)
+  s.close()
+}
+
+// 16b. a peer's smaller statement does not wake a node into signing what it holds
+{
+  const s = settler(A, memory(), [])
+  s.batchIdleMs = 60000
+  const wide = { ...job, batchUnits: 6 }
+  s.jobs.set(job.id, wide)
+  await s.add(await work(A, 300), { own: true }) // batch 50, nothing agreed yet
+  const b = s.batches.get(job.id + ':50')
+  await s._signBatch(b) // closed once with nothing to sign
+  for (const u of [301, 302]) {
+    await s.add(await work(A, u), { own: true })
+    await s.add(await work(B, u))
+  }
+  const leaves = [['301', result(301)]]
+  const root = merkleRoot(leaves.map(([u, r]) => batchLeaf(u, r)))
+  const signature = await C.signMessage(getBytes(batchStatement(ctx, job.id, b.batch, root, 1, ZeroAddress)))
+  await s.add({ v: 1, kind: 'batch', job: job.id, batch: String(b.batch), root, units: 1, forwarder: ZeroAddress, operator: C.address, signature, leaves })
+  await sleep(40)
+  check('a smaller statement from a peer does not make a node sign early', !b.mine && b.units.size === 2, `units ${b.mine && b.mine.units}`)
+  s.jobs.set(job.id, job)
+  s.close()
+  for (const o of s.batches.values()) for (const t of [o.idle, o.closing]) if (t) clearTimeout(t)
+}
+
+// 17. after restarts, the node holding the most units signs first and the rest adopt it
+{
+  const big = { ...job, id: 2, batchUnits: 6 }
+  const nodes = [A, B, C].map((w) => ({ w, s: null, out: [] }))
+  for (const n of nodes) {
+    n.s = settler(n.w, memory(), n.out, registry, big)
+    n.s.batchGraceMs = 40
+    n.s.publish = async (_t, payload) => { for (const o of nodes) if (o !== n) await o.s.add(JSON.parse(payload)) }
+  }
+  const signed = async (w, u) => ({ ...(await work(w, u)), job: big.id, signature: await w.signMessage(getBytes(workStatement(ctx, big.id, BigInt(u), result(u)))) })
+  // every node signed units 0..5; each knows a quorum for a different number of them
+  const known = [2, 5, 3]
+  for (const [i, n] of nodes.entries()) {
+    for (let u = 0; u < 6; u++) await n.s.add(await signed(n.w, u), { own: true, replay: true })
+    const other = nodes[(i + 1) % 3].w
+    for (let u = 6 - known[i]; u < 6; u++) await n.s.add(await signed(other, u))
+  }
+  await Promise.all(nodes.map(async (n) => n.s.add(await signed(n.w, 6), { own: true }))) // the next batch begins
+  await sleep(400)
+  const mine = nodes.map((n) => n.s.batches.get(big.id + ':0').mine)
+  check('nodes that restarted mid-batch sign one statement, the fullest', mine.every((m) => m && m.units === 5 && m.root === mine[1].root), mine.map((m) => m && m.units).join('/'))
+  for (const n of nodes) {
+    n.s.close()
+    for (const b of n.s.batches.values()) for (const t of [b.idle, b.closing, b.timer]) if (t && t !== true) clearTimeout(t)
+  }
+}
+
 // ---- what goes out (a job out of budget once burned every node's gas) --------
 
 // a registry whose settleBatchMany counts simulations and sends

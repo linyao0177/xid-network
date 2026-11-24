@@ -477,7 +477,7 @@ export class Settler extends EventEmitter {
   // a unit's groups then hold only genuine signatures: nothing forged counts
   // towards a quorum or replaces a good signature. This node's own work comes
   // only from its own workers (own: true); anything else in its name is ignored.
-  async add (w, { own = false } = {}) {
+  async add (w, { own = false, replay = false } = {}) {
     if (!w || typeof w !== 'object') return
     if (w.kind === 'batch') return this._addBatchSig(w)
     // one spelling of each value, as the signature covers it
@@ -498,7 +498,7 @@ export class Settler extends EventEmitter {
       this.stats.forged++
       return
     }
-    if (job.batchUnits && own) this._own(job, BigInt(w.unit), w.result, job.role === ROLES.FORWARD ? (w.detail && w.detail.forwarder) || null : ZeroAddress)
+    if (job.batchUnits && own) this._own(job, BigInt(w.unit), w.result, job.role === ROLES.FORWARD ? (w.detail && w.detail.forwarder) || null : ZeroAddress, replay)
     // another node's work: how long it took to get here (same buckets)
     if (w.at && !own) {
       const t = [2000, 5000, 15000, 30000, 60000].findIndex((x) => Date.now() - w.at < x)
@@ -868,23 +868,36 @@ export class Settler extends EventEmitter {
   }
 
   // a unit this node signed: it may sign the batch (and batches before it are over)
-  _own (job, unit, result, forwarder) {
+  _own (job, unit, result, forwarder, replay = false) {
     this.ownResults.set(job.id + ':' + unit, { result, forwarder })
     // how often the job's units come (a device's readings may be minutes
-    // apart): a batch waits three gaps before it counts as idle
-    const t = Date.now()
-    const g = this.gaps.get(job.id)
-    if (g && t > g.at) g.gap = g.gap ? Math.round(g.gap * 0.7 + (t - g.at) * 0.3) : t - g.at
-    this.gaps.set(job.id, { at: t, gap: g ? g.gap : 0 })
-    if (this.gaps.size > 50000) this.gaps.delete(this.gaps.keys().next().value)
+    // apart): a batch waits three gaps before it counts as idle. Units replayed
+    // after a restart or caught up in a burst say nothing about that pace: a
+    // gap measured from them closed batches early, each node with other units,
+    // and no statement reached a quorum. (A gap under a third of batchIdleMs
+    // would not change the wait, so it is not worth believing.)
+    if (!replay) {
+      const t = Date.now()
+      const g = this.gaps.get(job.id)
+      if (g && (t - g.at) * 3 >= this.batchIdleMs) g.gap = g.gap ? Math.round(g.gap * 0.7 + (t - g.at) * 0.3) : t - g.at
+      this.gaps.set(job.id, { at: t, gap: g ? g.gap : 0 })
+      if (this.gaps.size > 50000) this.gaps.delete(this.gaps.keys().next().value)
+    }
     if (this.ownResults.size > 50000) this.ownResults.delete(this.ownResults.keys().next().value)
     const now = batchOf(unit, job.batchUnits)
     const b = this._batch(job, now)
     b.last = Date.now()
     this._idle(b)
     for (const o of this.batches.values()) {
-      if (o.job.id === job.id && !o.mine && !o.done && BigInt(o.batch) < now) this._close(o, this.batchGraceMs)
+      if (o.job.id === job.id && !o.mine && !o.done && BigInt(o.batch) < now) this._close(o, this._closeDelay(o, this.batchGraceMs))
     }
+  }
+
+  // the fewer of its units a node holds (it restarted mid-batch, say), the
+  // longer it waits: the node that holds the most signs first, and the others
+  // adopt its statement instead of signing one of their own
+  _closeDelay (b, base) {
+    return base + this.settleDelayMs * Math.max(0, b.job.batchUnits - b.units.size)
   }
 
   // a unit agreed by a quorum of active nodes that includes this node
@@ -907,7 +920,7 @@ export class Settler extends EventEmitter {
     const g = this.gaps.get(b.job.id)
     // (before the gap is known, ten times batchIdleMs: the first batch after a
     // start would otherwise close with one unit when units are minutes apart)
-    b.idle = setTimeout(() => this._close(b, 0), g && g.gap ? Math.max(this.batchIdleMs, g.gap * 3) : this.batchIdleMs * 10)
+    b.idle = setTimeout(() => this._close(b, this._closeDelay(b, 0)), g && g.gap ? Math.max(this.batchIdleMs, g.gap * 3) : this.batchIdleMs * 10)
     b.idle.unref?.()
   }
 
@@ -916,7 +929,12 @@ export class Settler extends EventEmitter {
     if (b.mine || b.done || delay >= b.closingDelay) return
     if (b.closing) clearTimeout(b.closing)
     b.closingDelay = delay
-    b.closing = setTimeout(() => this._signBatch(b).catch((e) => this.emit('error', e)), delay)
+    b.closing = setTimeout(() => {
+      // (a close that finds nothing to sign must not stop a later one)
+      b.closing = null
+      b.closingDelay = Infinity
+      this._signBatch(b).catch((e) => this.emit('error', e))
+    }, delay)
     b.closing.unref?.()
   }
 
@@ -1085,7 +1103,9 @@ export class Settler extends EventEmitter {
       let root = null
       try { root = merkleRoot(w.leaves.map(([u, r]) => batchLeaf(u, r))) } catch {}
       if (root === w.root) b.peers.set(g, { leaves: w.leaves, forwarder })
-      if (b.tried && !b.mine) this._signBatch(b).catch((e) => this.emit('error', e)) // closed with nothing to sign: maybe this
+      // closed with nothing to sign: maybe this. A statement smaller than what
+      // this node holds is no reason to sign early: it would sign a third one
+      if (b.tried && !b.mine && w.leaves.length >= b.units.size) this._signBatch(b).catch((e) => this.emit('error', e))
     }
     this._checkBatch(b)
   }
