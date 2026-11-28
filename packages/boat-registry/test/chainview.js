@@ -12,7 +12,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { HDNodeWallet, getBytes, toUtf8Bytes, ZeroAddress } from 'ethers'
-import { deploy, deployTestToken, register, ROLES, SPEC, ChainView, assignJobs, openJobAmong, workStatement, batchStatement, batchLeaf, merkleRoot } from '../index.js'
+import { deploy, deployTestToken, register, ROLES, SPEC, ChainView, assignJobs, openJobAmong, workStatement, batchStatement, batchLeaf, merkleRoot, isRateLimit } from '../index.js'
 import { startChain, MNEMONIC } from './chain.js'
 
 let passed = 0
@@ -217,6 +217,49 @@ try {
   const before = reads
   await resumed.sync()
   check('after a failed sync the next one reads only the chunks it had not', before === 3 && reads - before === 2 && JSON.stringify(resumed.state.nodes) === JSON.stringify(ref.state.nodes), `${before} then ${reads - before} reads`)
+
+  // an RPC that limits its callers: wait and read the same range again, with
+  // the chunk as it was (it was read as "range too large" and halved)
+  const limited = () => Object.assign(new Error('could not coalesce error'), { error: { code: -32005, message: 'rate limit exceeded' } })
+  check('a rate limit is told apart from a range too large', isRateLimit(limited()) && isRateLimit(new Error('server response 429 Too Many Requests')) &&
+    !isRateLimit(new Error('requested range too large')) && !isRateLimit(new Error('rpc down')))
+  const ranges = []
+  let refusals = 2
+  const busy = new Proxy(chain.provider, {
+    get (target, prop) {
+      if (prop === 'getLogs') return async (f) => { ranges.push(f.fromBlock + ':' + f.toBlock); if (ranges.length === 2 && refusals-- > 0) { ranges.pop(); throw limited() } return target.getLogs(f) }
+      const v = target[prop]
+      return typeof v === 'function' ? v.bind(target) : v
+    }
+  })
+  const patient = new ChainView({ registry: reg, provider: busy, step: 1, lag: 0, chunk: Math.ceil((head + 1) / 4), minStake: MIN, rateWaitMs: 1 })
+  const chunk = patient.chunk
+  await patient.sync()
+  check('a rate-limited sync waits, keeps its chunk and finishes in one go', refusals < 0 && patient.chunk === chunk && ranges.length === 4 && new Set(ranges).size === 4 && JSON.stringify(patient.state.nodes) === JSON.stringify(ref.state.nodes), `${ranges.length} reads, chunk ${chunk} -> ${patient.chunk}`)
+
+  const always = new Proxy(chain.provider, {
+    get (target, prop) {
+      if (prop === 'getLogs') return async () => { throw limited() }
+      const v = target[prop]
+      return typeof v === 'function' ? v.bind(target) : v
+    }
+  })
+  const capped = new ChainView({ registry: reg, provider: always, step: 1, lag: 0, chunk: 4, minStake: MIN, rateWaitMs: 1, rateWaits: 3 })
+  let gaveUp = null
+  try { await capped.sync() } catch (err) { gaveUp = err }
+  check('an RPC that never lets up fails the sync after rateWaits tries, chunk unchanged', isRateLimit(gaveUp) && capped.chunk === 4 && capped.block === -1)
+
+  let tooLarge = true
+  const narrow = new Proxy(chain.provider, {
+    get (target, prop) {
+      if (prop === 'getLogs') return async (f) => { if (tooLarge) { tooLarge = false; throw new Error('requested range too large') } return target.getLogs(f) }
+      const v = target[prop]
+      return typeof v === 'function' ? v.bind(target) : v
+    }
+  })
+  const halved = new ChainView({ registry: reg, provider: narrow, step: 1, lag: 0, chunk: 400, minStake: MIN })
+  await halved.sync()
+  check('a range too large still halves the chunk', halved.chunk === 200 && JSON.stringify(halved.state.nodes) === JSON.stringify(ref.state.nodes))
 } catch (err) {
   console.error(err)
   failed++

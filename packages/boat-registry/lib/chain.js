@@ -37,6 +37,15 @@ import { jobProblem } from './work.js'
 
 const EVENTS = ['JobPosted', 'BatchJob', 'JobFunded', 'JobSpent', 'JobClosing', 'JobClosed', 'NodeRegistered', 'Unbonding', 'Withdrawn', 'Slashed', 'CapacitySet']
 
+// Is this RPC error a public RPC limiting its callers (JSON-RPC -32005 or
+// HTTP 429)? ethers reports it as "could not coalesce error", the RPC's own
+// error in err.error
+export function isRateLimit (err) {
+  const codes = [err?.error?.code, err?.info?.error?.code, err?.code]
+  if (codes.includes(-32005) || codes.includes(429)) return true
+  return /rate limit|too many requests/i.test(`${err?.error?.message || ''} ${err?.message || ''}`)
+}
+
 export class ChainView {
   // registry: the BoatRegistry contract (with a provider); fromBlock: where to
   // start reading (null: the block it was deployed in, found by its code);
@@ -44,12 +53,16 @@ export class ChainView {
   // also: names of other events of the registry to hand on as they are read
   // (taken with drain()): the settlements, for the audit (lib/audit.js),
   // from the same logs, so the chain is not read twice
-  constructor ({ registry, provider = null, fromBlock = null, step = 10, lag = 2, chunk = 5000, minStake = 0n, file = null, spentHoldS = 86400, also = [] }) {
+  // rateWaitMs, rateWaits: how long to wait the first time the RPC limits its
+  // callers (doubling to 30 s), and how many times in one sync
+  constructor ({ registry, provider = null, fromBlock = null, step = 10, lag = 2, chunk = 5000, minStake = 0n, file = null, spentHoldS = 86400, also = [], rateWaitMs = 2000, rateWaits = 8 }) {
     this.registry = registry
     this.provider = provider || registry.runner.provider
     this.step = step
     this.lag = lag
     this.chunk = chunk
+    this.rateWaitMs = rateWaitMs
+    this.rateWaits = rateWaits
     this.minStake = BigInt(minStake)
     this.file = file
     this.fromBlock = fromBlock
@@ -125,6 +138,7 @@ export class ChainView {
     if (next.block < 0) next.block = (this.fromBlock ?? await deployBlockOf(this.provider, this.registry.target, asOf)) - 1
     const touched = new Set() // nodes slashed in these blocks: read as of asOf
     let events = 0
+    let waits = 0
     const tapped = []
     for (let from = next.block + 1; from <= asOf;) {
       const to = Math.min(asOf, from + this.chunk - 1)
@@ -138,6 +152,15 @@ export class ChainView {
         try {
           logs = await this.provider.getLogs({ address: this.registry.target, fromBlock: from, toBlock: to })
         } catch (err) {
+          // an RPC that limits its callers means "not yet": the same range
+          // again after a while. (Read as a range too large, it halved the
+          // chunk each time, and the logs kept for the old chunks no longer
+          // matched: a sync after a day offline never finished.)
+          if (isRateLimit(err)) {
+            if (waits >= this.rateWaits) throw err
+            await new Promise((resolve) => setTimeout(resolve, Math.min(30000, this.rateWaitMs * 2 ** waits++)))
+            continue
+          }
           // a range the RPC refuses: smaller chunks from here on
           if (this.chunk > 50 && /range|too large|limit|exceed/i.test(err.error?.message || err.message)) {
             this.chunk = Math.max(50, Math.floor(this.chunk / 2))
