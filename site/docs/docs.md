@@ -83,7 +83,7 @@ A network that is always on, for trying xid network with others: four nodes in f
 | Part | Where |
 | --- | --- |
 | Nodes | `xid-us` (Iowa), `xid-eu` (Belgium), `xid-tw` (Taiwan), `xid-jp` (Tokyo): forward, store, verify and compute, 100 TSUSD staked each |
-| Chain | Arc testnet (chain id 5042002), RPC `https://rpc.testnet.arc.network`, [explorer](https://testnet.arcscan.app) |
+| Chain | Arc testnet (chain id 5042002), RPC `https://rpc.testnet.arc.io`, [explorer](https://explorer.testnet.arc.io) |
 | Contracts | Registry `0x26Ae7fCe8FBB4cAcE6778eC00a4EfFe785D83329`, TSUSD `0xB274c18eb5ff5F06be97C8C6dFc9A70916f194E8` |
 | Network name | `xid-testnet` |
 | Everything above, for programs | [testnet.json](https://iot.xid.network/testnet.json) |
@@ -137,7 +137,7 @@ It stakes 100 TSUSD, registers, and starts taking work. Settling uses gas, about
 Anyone can post jobs on any device. `boat-post-jobs` mints the budget in TSUSD itself, so the wallet in `my.key` (a private key in hex) needs only gas:
 
 ```bash
-boat-post-jobs --rpc https://rpc.testnet.arc.network --registry 0x26Ae7fCe8FBB4cAcE6778eC00a4EfFe785D83329 \
+boat-post-jobs --rpc https://rpc.testnet.arc.io --registry 0x26Ae7fCe8FBB4cAcE6778eC00a4EfFe785D83329 \
   --key-file my.key --device <device key> --only verify,store
 ```
 

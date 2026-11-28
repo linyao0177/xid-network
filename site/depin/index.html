@@ -197,7 +197,7 @@ const ago = (ms) => {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
   return s < 60 ? s + ' s ago' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'
 }
-let explorer = 'https://testnet.arcscan.app'
+let explorer = 'https://explorer.testnet.arc.io'
 let nodes = []
 
 // equirectangular: lon -180..180, lat 75..-60
