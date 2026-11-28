@@ -3,8 +3,8 @@
   "network": "xid-testnet",
   "chainId": 5042002,
   "chain": "Arc testnet",
-  "rpc": "https://rpc.testnet.arc.network",
-  "explorer": "https://testnet.arcscan.app",
+  "rpc": "https://rpc.testnet.arc.io",
+  "explorer": "https://explorer.testnet.arc.io",
   "gasFaucet": "https://faucet.circle.com",
   "registry": "0x26Ae7fCe8FBB4cAcE6778eC00a4EfFe785D83329",
   "reads": "0x2E55ed4486Dd0470b5b1cAD5615f3493C8B7D5da",
@@ -90,7 +90,7 @@
   "depin": [
     {
       "chainId": 5042002,
-      "rpc": "https://rpc.testnet.arc.network",
+      "rpc": "https://rpc.testnet.arc.io",
       "registry": "0x26Ae7fCe8FBB4cAcE6778eC00a4EfFe785D83329",
       "netKey": "a8d6fca8d50e7fd44436c20ab5440a5f1cc1b2ec7dcf3f8fbe95e2ec65c8e3e3",
       "config": {
